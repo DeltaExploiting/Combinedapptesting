@@ -12,6 +12,7 @@ struct GuestApp: Identifiable, Codable, Hashable {
     let displayName: String
     let version: String
     let importedAt: Date
+    let storedFileName: String
 }
 
 struct ContentView: View {
@@ -19,6 +20,11 @@ struct ContentView: View {
     @State private var showingImporter = false
     @State private var selectedApp: GuestApp?
     @State private var message = ""
+
+    private var storageURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("DualIPA", isDirectory: true)
+    }
 
     var body: some View {
         NavigationStack {
@@ -50,6 +56,9 @@ struct ContentView: View {
                                         Text("Version \(app.version)")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
+                                        Text(app.fileName)
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
                                     }
                                     Spacer()
                                     Text("Launch")
@@ -59,7 +68,9 @@ struct ContentView: View {
                             }
                             .buttonStyle(.plain)
                         }
-                        .onDelete { apps.remove(atOffsets: $0); saveApps() }
+                        .onDelete { offsets in
+                            deleteApps(at: offsets)
+                        }
                     }
                     .scrollContentBackground(.hidden)
                 }
@@ -71,9 +82,11 @@ struct ContentView: View {
                     Button { showingImporter = true } label: { Image(systemName: "plus") }
                 }
             }
-            .fileImporter(isPresented: $showingImporter,
-                          allowedContentTypes: [UTType(filenameExtension: "ipa") ?? .data],
-                          allowsMultipleSelection: true) { result in
+            .fileImporter(
+                isPresented: $showingImporter,
+                allowedContentTypes: [UTType(filenameExtension: "ipa") ?? .data],
+                allowsMultipleSelection: true
+            ) { result in
                 importIPAs(result)
             }
             .sheet(item: $selectedApp) { app in
@@ -91,25 +104,67 @@ struct ContentView: View {
 
     private func importIPAs(_ result: Result<[URL], Error>) {
         switch result {
-        case .failure(let error): message = error.localizedDescription
+        case .failure(let error):
+            message = "Import failed: \(error.localizedDescription)"
+
         case .success(let urls):
-            var imported = 0
-            for url in urls where url.pathExtension.lowercased() == "ipa" {
-                let app = GuestApp(id: UUID(), fileName: url.lastPathComponent,
-                                   displayName: url.deletingPathExtension().lastPathComponent,
-                                   version: "Imported", importedAt: Date())
-                if !apps.contains(where: { $0.fileName == app.fileName }) {
-                    apps.append(app); imported += 1
+            do {
+                try FileManager.default.createDirectory(at: storageURL, withIntermediateDirectories: true)
+
+                var imported = 0
+                var failures = 0
+
+                for url in urls where url.pathExtension.lowercased() == "ipa" {
+                    let accessGranted = url.startAccessingSecurityScopedResource()
+                    defer {
+                        if accessGranted { url.stopAccessingSecurityScopedResource() }
+                    }
+
+                    let id = UUID()
+                    let storedName = "\(id.uuidString).ipa"
+                    let destination = storageURL.appendingPathComponent(storedName)
+
+                    do {
+                        try FileManager.default.copyItem(at: url, to: destination)
+
+                        let app = GuestApp(
+                            id: id,
+                            fileName: url.lastPathComponent,
+                            displayName: url.deletingPathExtension().lastPathComponent,
+                            version: "Imported",
+                            importedAt: Date(),
+                            storedFileName: storedName
+                        )
+                        apps.append(app)
+                        imported += 1
+                    } catch {
+                        failures += 1
+                    }
                 }
+
+                saveApps()
+
+                if imported == 0 {
+                    message = "No IPA files could be imported. Make sure the selected files are valid .ipa files."
+                } else if failures > 0 {
+                    message = "Imported \(imported) IPA file(s). \(failures) file(s) could not be copied."
+                } else {
+                    message = "Imported \(imported) IPA file(s) successfully."
+                }
+            } catch {
+                message = "Could not create the IPA library: \(error.localizedDescription)"
             }
-            saveApps()
-            if imported == 0 { message = "No new IPA files were imported." }
         }
     }
 
-    private var storageURL: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("DualIPA", isDirectory: true)
+    private func deleteApps(at offsets: IndexSet) {
+        for index in offsets {
+            let app = apps[index]
+            let file = storageURL.appendingPathComponent(app.storedFileName)
+            try? FileManager.default.removeItem(at: file)
+        }
+        apps.remove(atOffsets: offsets)
+        saveApps()
     }
 
     private func saveApps() {
@@ -117,19 +172,36 @@ struct ContentView: View {
             try FileManager.default.createDirectory(at: storageURL, withIntermediateDirectories: true)
             let data = try JSONEncoder().encode(apps)
             try data.write(to: storageURL.appendingPathComponent("apps.json"), options: .atomic)
-        } catch { message = "Could not save the app library." }
+        } catch {
+            message = "Could not save the app library."
+        }
     }
 
     private func loadApps() {
-        guard let data = try? Data(contentsOf: storageURL.appendingPathComponent("apps.json")),
-              let saved = try? JSONDecoder().decode([GuestApp].self, from: data) else { return }
-        apps = saved
+        guard
+            let data = try? Data(contentsOf: storageURL.appendingPathComponent("apps.json")),
+            let saved = try? JSONDecoder().decode([GuestApp].self, from: data)
+        else { return }
+
+        apps = saved.filter { app in
+            FileManager.default.fileExists(atPath: storageURL.appendingPathComponent(app.storedFileName).path)
+        }
+
+        if apps.count != saved.count {
+            saveApps()
+        }
     }
 }
 
 struct GuestContainerView: View {
     let app: GuestApp
     @Environment(\.dismiss) private var dismiss
+
+    private var storedIPAURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("DualIPA", isDirectory: true)
+            .appendingPathComponent(app.storedFileName)
+    }
 
     var body: some View {
         NavigationStack {
@@ -146,7 +218,11 @@ struct GuestContainerView: View {
                 Text("Guest app container")
                     .foregroundStyle(.secondary)
 
-                Text("The IPA is registered in the Dual IPA library. A normal iOS app cannot execute an arbitrary IPA merely by embedding it; a LiveContainer-style runtime is required for actual guest execution.")
+                Text(FileManager.default.fileExists(atPath: storedIPAURL.path) ? "IPA stored successfully" : "IPA file is missing")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Text("The imported IPA is now copied into the app's private library so it remains available after the file picker closes and after restarting Dual IPA. Actual execution of an arbitrary iOS IPA still requires a LiveContainer-style runtime.")
                     .font(.footnote)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
@@ -156,7 +232,11 @@ struct GuestContainerView: View {
             }
             .padding()
             .navigationTitle("Launch")
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
         .preferredColorScheme(.dark)
     }
