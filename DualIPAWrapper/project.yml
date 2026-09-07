@@ -1,0 +1,16 @@
+name: DualIPAWrapper
+options:
+  bundleIdPrefix: com.example
+targets:
+  DualIPAWrapper:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - ContentView.swift
+    resources:
+      - Resources
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.example.DualIPAWrapper
+      SWIFT_VERSION: "5.0"
+      INFOPLIST_KEY_UILaunchScreen_Generation: YES
