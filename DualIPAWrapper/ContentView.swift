@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import UIKit
 
 @main
 struct DualIPAWrapperApp: App {
@@ -13,6 +14,35 @@ struct GuestApp: Identifiable, Codable, Hashable {
     let version: String
     let importedAt: Date
     let storedFileName: String
+}
+
+struct IPAFilePicker: UIViewControllerRepresentable {
+    let onPick: ([URL]) -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: false)
+        picker.allowsMultipleSelection = true
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let parent: IPAFilePicker
+        init(_ parent: IPAFilePicker) { self.parent = parent }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            parent.onPick(urls)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            parent.onCancel()
+        }
+    }
 }
 
 struct ContentView: View {
@@ -75,13 +105,15 @@ struct ContentView: View {
                     Button { showingImporter = true } label: { Image(systemName: "plus") }
                 }
             }
-            // .item is intentionally used here. The Files app can classify .ipa
-            // archives as packages, so .data/custom IPA UTIs can make Open fail.
-            .fileImporter(
-                isPresented: $showingImporter,
-                allowedContentTypes: [.item],
-                allowsMultipleSelection: true
-            ) { importIPAs($0) }
+            .sheet(isPresented: $showingImporter) {
+                IPAFilePicker(
+                    onPick: { urls in
+                        showingImporter = false
+                        importIPAs(urls)
+                    },
+                    onCancel: { showingImporter = false }
+                )
+            }
             .sheet(item: $selectedApp) { GuestContainerView(app: $0) }
             .alert("Dual IPA", isPresented: Binding(
                 get: { !message.isEmpty },
@@ -94,53 +126,59 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
     }
 
-    private func importIPAs(_ result: Result<[URL], Error>) {
-        switch result {
-        case .failure(let error):
-            message = "Import failed: \(error.localizedDescription)"
-        case .success(let urls):
-            let ipaURLs = urls.filter { $0.isFileURL && $0.pathExtension.lowercased() == "ipa" }
-            guard !ipaURLs.isEmpty else {
-                message = "Please select an .ipa file."
-                return
-            }
-            do {
-                try FileManager.default.createDirectory(at: storageURL, withIntermediateDirectories: true)
-                var imported = 0
-                var failures: [String] = []
-                for url in ipaURLs {
-                    let access = url.startAccessingSecurityScopedResource()
-                    defer { if access { url.stopAccessingSecurityScopedResource() } }
+    private func importIPAs(_ urls: [URL]) {
+        let ipaURLs = urls.filter {
+            $0.isFileURL && $0.pathExtension.lowercased() == "ipa"
+        }
+
+        guard !ipaURLs.isEmpty else {
+            message = "No IPA selected. Please choose a file ending in .ipa."
+            return
+        }
+
+        do {
+            try FileManager.default.createDirectory(at: storageURL, withIntermediateDirectories: true, attributes: nil)
+            var imported = 0
+            var failures: [String] = []
+
+            for url in ipaURLs {
+                let hasAccess = url.startAccessingSecurityScopedResource()
+                defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
+
+                do {
                     let id = UUID()
                     let storedName = "\(id.uuidString).ipa"
                     let destination = storageURL.appendingPathComponent(storedName)
-                    do {
-                        try FileManager.default.copyItem(at: url, to: destination)
-                        apps.append(GuestApp(
-                            id: id,
-                            fileName: url.lastPathComponent,
-                            displayName: url.deletingPathExtension().lastPathComponent,
-                            version: "Imported",
-                            importedAt: Date(),
-                            storedFileName: storedName
-                        ))
-                        imported += 1
-                    } catch {
-                        try? FileManager.default.removeItem(at: destination)
-                        failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                    let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+                    guard !data.isEmpty else {
+                        throw CocoaError(.fileReadUnknown, userInfo: [NSLocalizedDescriptionKey: "The selected IPA is empty."])
                     }
+                    try data.write(to: destination, options: .atomic)
+
+                    apps.append(GuestApp(
+                        id: id,
+                        fileName: url.lastPathComponent,
+                        displayName: url.deletingPathExtension().lastPathComponent,
+                        version: "Imported",
+                        importedAt: Date(),
+                        storedFileName: storedName
+                    ))
+                    imported += 1
+                } catch {
+                    failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
                 }
-                saveApps()
-                if imported == 0 {
-                    message = "No IPA files could be imported. Make sure the file is accessible in Files.\n\(failures.joined(separator: "\n"))"
-                } else if !failures.isEmpty {
-                    message = "Imported \(imported) IPA file(s). \(failures.count) failed.\n\(failures.joined(separator: "\n"))"
-                } else {
-                    message = "Imported \(imported) IPA file(s) successfully."
-                }
-            } catch {
-                message = "Could not create the IPA library: \(error.localizedDescription)"
             }
+
+            saveApps()
+            if imported == 0 {
+                message = "Import failed.\n\(failures.joined(separator: "\n"))"
+            } else if failures.isEmpty {
+                message = "Imported \(imported) IPA file(s) successfully."
+            } else {
+                message = "Imported \(imported) IPA file(s).\n\nFailed:\n\(failures.joined(separator: "\n"))"
+            }
+        } catch {
+            message = "Could not create the IPA library: \(error.localizedDescription)"
         }
     }
 
@@ -155,7 +193,7 @@ struct ContentView: View {
 
     private func saveApps() {
         do {
-            try FileManager.default.createDirectory(at: storageURL, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: storageURL, withIntermediateDirectories: true, attributes: nil)
             let data = try JSONEncoder().encode(apps)
             try data.write(to: storageURL.appendingPathComponent("apps.json"), options: .atomic)
         } catch {
@@ -193,12 +231,13 @@ struct GuestContainerView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 24))
                 Text(app.displayName).font(.title.bold())
                 Text("Guest app container").foregroundStyle(.secondary)
-                Text(FileManager.default.fileExists(atPath: storedIPAURL.path)
-                     ? "IPA stored successfully" : "IPA file is missing")
+                Text(FileManager.default.fileExists(atPath: storedIPAURL.path) ? "IPA stored successfully" : "IPA file is missing")
                     .font(.footnote).foregroundStyle(.secondary)
                 Text("The imported IPA is stored in this app's private library. A normal iOS app cannot directly execute another arbitrary IPA; actual guest execution requires a LiveContainer-style runtime.")
-                    .font(.footnote).multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary).padding(.horizontal)
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
                 Spacer()
             }
             .padding()
