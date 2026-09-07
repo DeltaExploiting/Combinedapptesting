@@ -30,9 +30,12 @@ jobs:
           printf '%s' "$SIDEINSTALLER_PROFILE" | base64 --decode > /tmp/sideinstaller.mobileprovision
           printf '%s' "$DUALWRAPPER_PROFILE" | base64 --decode > /tmp/dualwrapper.mobileprovision
 
-          for profile in /tmp/*.mobileprovision; do
-            UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin < <(security cms -D -i "$profile"))
+          for profile in /tmp/{esign,sideinstaller,dualwrapper}.mobileprovision; do
+            UUID=$(security cms -D -i "$profile" | /usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin)
             cp "$profile" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.mobileprovision"
+            case "$profile" in
+              /tmp/dualwrapper.mobileprovision) echo "DUALWRAPPER_PROFILE_UUID=$UUID" >> "$GITHUB_ENV" ;;
+            esac
           done
 
       - name: Download IPA resources
@@ -43,7 +46,6 @@ jobs:
             https://github.com/DeltaExploiting/Combinedapptesting/releases/download/62828/esign_5.0.2_unsigned.ipa
           curl -fL --retry 3 -o /tmp/sideinstaller.ipa \
             https://github.com/DeltaExploiting/Combinedapptesting/releases/download/Sideinstalltest/SideInstaller-sideinstaller-scheme.ipa
-
           unzip -q /tmp/esign.ipa -d /tmp/apps/esign
           unzip -q /tmp/sideinstaller.ipa -d /tmp/apps/sideinstaller
 
@@ -51,9 +53,8 @@ jobs:
         run: |
           set -euo pipefail
           APP=$(find /tmp/apps/sideinstaller/Payload -maxdepth 1 -name '*.app' -print -quit)
-          PLIST="$APP/Info.plist"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes array" "$PLIST" 2>/dev/null || true
-          /usr/bin/python3 - "$PLIST" <<'PY'
+          test -n "$APP"
+          /usr/bin/python3 - "$APP/Info.plist" <<'PY'
 import plistlib, sys
 from pathlib import Path
 p = Path(sys.argv[1])
@@ -72,30 +73,36 @@ PY
 
       - name: Sign ESign and SideInstaller
         env:
-          KEYCHAIN_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
-          IDENTITY=$(security find-identity -v -p codesigning | awk -F '"' '/valid identities found/ {next} /"Apple/ || /"iPhone/ {print $2; exit}')
+          IDENTITY="$SIGNING_IDENTITY"
+          if [ -z "$IDENTITY" ]; then
+            IDENTITY=$(security find-identity -v -p codesigning | awk -F '"' '/"Apple/ || /"iPhone/ {print $2; exit}')
+          fi
           test -n "$IDENTITY" || { echo 'No usable Apple/iPhone codesigning identity was imported.'; exit 1; }
           echo "Using signing identity: $IDENTITY"
 
           sign_app() {
             local APP="$1"
             local PROFILE="$2"
-            local PROFILE_PLIST="/tmp/$(basename "$APP").profile.plist"
-            local ENTITLEMENTS="/tmp/$(basename "$APP").entitlements.plist"
+            local BASE
+            BASE=$(basename "$APP")
+            local PROFILE_PLIST="/tmp/${BASE}.profile.plist"
+            local ENTITLEMENTS="/tmp/${BASE}.entitlements.plist"
 
             security cms -D -i "$PROFILE" > "$PROFILE_PLIST"
             /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' "$PROFILE_PLIST" > "$ENTITLEMENTS"
             cp "$PROFILE" "$APP/embedded.mobileprovision"
 
-            find "$APP" -type d \( -name '*.framework' -o -name '*.appex' \) -prune -print | sort -r | while read -r nested; do
+            find "$APP" -type d -name '*.framework' -print | sort -r | while read -r nested; do
+              codesign --force --sign "$IDENTITY" --timestamp=none "$nested"
+            done
+            find "$APP" -type d -name '*.appex' -print | sort -r | while read -r nested; do
               codesign --force --sign "$IDENTITY" --timestamp=none "$nested"
             done
             find "$APP" -type f -perm -111 -print | sort -r | while read -r executable; do
-              case "$executable" in
-                *.app/*) codesign --force --sign "$IDENTITY" --timestamp=none "$executable" || true ;;
-              esac
+              codesign --force --sign "$IDENTITY" --timestamp=none "$executable" || true
             done
             codesign --force --sign "$IDENTITY" --entitlements "$ENTITLEMENTS" --timestamp=none "$APP"
             codesign --verify --deep --strict --verbose=2 "$APP"
@@ -104,7 +111,6 @@ PY
           ESIGN_APP=$(find /tmp/apps/esign/Payload -maxdepth 1 -name '*.app' -print -quit)
           SIDE_APP=$(find /tmp/apps/sideinstaller/Payload -maxdepth 1 -name '*.app' -print -quit)
           test -n "$ESIGN_APP" && test -n "$SIDE_APP"
-
           sign_app "$ESIGN_APP" /tmp/esign.mobileprovision
           sign_app "$SIDE_APP" /tmp/sideinstaller.mobileprovision
 
@@ -137,8 +143,14 @@ PY
         working-directory: DualIPAWrapper
         env:
           DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
+          IDENTITY="$SIGNING_IDENTITY"
+          if [ -z "$IDENTITY" ]; then
+            IDENTITY=$(security find-identity -v -p codesigning | awk -F '"' '/"Apple/ || /"iPhone/ {print $2; exit}')
+          fi
+          test -n "$IDENTITY" || { echo 'No signing identity available.'; exit 1; }
           xcodebuild \
             -project DualIPAWrapper.xcodeproj \
             -scheme DualIPAWrapper \
@@ -146,9 +158,9 @@ PY
             -configuration Release \
             -derivedDataPath "$GITHUB_WORKSPACE/build" \
             CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="iPhone Distribution" \
+            CODE_SIGN_IDENTITY="$IDENTITY" \
             DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
-            PROVISIONING_PROFILE_SPECIFIER="${{ secrets.DUALWRAPPER_PROFILE_NAME }}" \
+            PROVISIONING_PROFILE_SPECIFIER="$DUALWRAPPER_PROFILE_UUID" \
             build
 
       - name: Package signed DualWrapper IPA
@@ -158,7 +170,6 @@ PY
           test -n "$APP_PATH"
           mkdir -p /tmp/wrapper/Payload
           cp -R "$APP_PATH" /tmp/wrapper/Payload/
-          /usr/bin/zip -qry dist/DualWrapper-signed.ipa -j /dev/null 2>/dev/null || true
           (cd /tmp/wrapper && /usr/bin/zip -qry "$GITHUB_WORKSPACE/dist/DualWrapper-signed.ipa" Payload)
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
