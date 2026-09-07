@@ -82,9 +82,13 @@ struct ContentView: View {
                     Button { showingImporter = true } label: { Image(systemName: "plus") }
                 }
             }
+            // Do not use a custom .ipa UTType here. iOS Files may not recognize
+            // .ipa as a registered document type, which can leave the Open button
+            // disabled or make the picker appear to do nothing. Accept file data
+            // and validate the .ipa extension after the user taps Open.
             .fileImporter(
                 isPresented: $showingImporter,
-                allowedContentTypes: [UTType(filenameExtension: "ipa") ?? .data],
+                allowedContentTypes: [.data],
                 allowsMultipleSelection: true
             ) { result in
                 importIPAs(result)
@@ -108,13 +112,24 @@ struct ContentView: View {
             message = "Import failed: \(error.localizedDescription)"
 
         case .success(let urls):
+            let ipaURLs = urls.filter { $0.pathExtension.lowercased() == "ipa" }
+
+            guard !ipaURLs.isEmpty else {
+                message = "Please select an .ipa file."
+                return
+            }
+
             do {
-                try FileManager.default.createDirectory(at: storageURL, withIntermediateDirectories: true)
+                try FileManager.default.createDirectory(
+                    at: storageURL,
+                    withIntermediateDirectories: true,
+                    attributes: nil
+                )
 
                 var imported = 0
                 var failures = 0
 
-                for url in urls where url.pathExtension.lowercased() == "ipa" {
+                for url in ipaURLs {
                     let accessGranted = url.startAccessingSecurityScopedResource()
                     defer {
                         if accessGranted { url.stopAccessingSecurityScopedResource() }
@@ -125,6 +140,9 @@ struct ContentView: View {
                     let destination = storageURL.appendingPathComponent(storedName)
 
                     do {
+                        // File URLs supplied by the Files picker can be security-scoped.
+                        // Copying while access is active makes the import independent of
+                        // the picker once it closes.
                         try FileManager.default.copyItem(at: url, to: destination)
 
                         let app = GuestApp(
@@ -138,6 +156,7 @@ struct ContentView: View {
                         apps.append(app)
                         imported += 1
                     } catch {
+                        try? FileManager.default.removeItem(at: destination)
                         failures += 1
                     }
                 }
@@ -145,7 +164,7 @@ struct ContentView: View {
                 saveApps()
 
                 if imported == 0 {
-                    message = "No IPA files could be imported. Make sure the selected files are valid .ipa files."
+                    message = "No IPA files could be imported. Check that the selected file is accessible and ends in .ipa."
                 } else if failures > 0 {
                     message = "Imported \(imported) IPA file(s). \(failures) file(s) could not be copied."
                 } else {
@@ -169,11 +188,11 @@ struct ContentView: View {
 
     private func saveApps() {
         do {
-            try FileManager.default.createDirectory(at: storageURL, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: storageURL, withIntermediateDirectories: true, attributes: nil)
             let data = try JSONEncoder().encode(apps)
             try data.write(to: storageURL.appendingPathComponent("apps.json"), options: .atomic)
         } catch {
-            message = "Could not save the app library."
+            message = "Could not save the app library: \(error.localizedDescription)"
         }
     }
 
@@ -222,7 +241,7 @@ struct GuestContainerView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                Text("The imported IPA is now copied into the app's private library so it remains available after the file picker closes and after restarting Dual IPA. Actual execution of an arbitrary iOS IPA still requires a LiveContainer-style runtime.")
+                Text("The imported IPA is copied into the app's private library so it remains available after the file picker closes and after restarting Dual IPA. Actual execution of an arbitrary iOS IPA still requires a LiveContainer-style runtime.")
                     .font(.footnote)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
