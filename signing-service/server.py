@@ -16,8 +16,8 @@ ROOT = Path(os.environ.get("CERTS_ROOT", "./certs")).resolve()
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 API_TOKEN = os.environ.get("SIGNING_API_TOKEN", "")
 
-# Map the exact certificate names sent by the iOS app to administrator-created
-# local aliases. Example: {"My Authorized Certificate":"team1"}
+# Map exact certificate display names to administrator-created local aliases.
+# Private keys and provisioning profiles remain on the signing server.
 CERTIFICATE_MAP = json.loads(os.environ.get("CERTIFICATE_MAP", "{}"))
 
 
@@ -63,6 +63,13 @@ def install_identity(p12: Path, password: str, keychain: Path) -> str:
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/certificates")
+def certificates(authorization: str | None = None):
+    """Return only certificate display names configured by the service operator."""
+    require_token(authorization or None)
+    return {"certificates": list(CERTIFICATE_MAP.keys())}
 
 
 @app.post("/sign")
@@ -116,7 +123,6 @@ async def sign(
                 "metadata": {"bundle-identifier": "", "kind": "software", "title": ipa.filename or "Signed IPA", "version": "1.0"}
             }]
         }
-        # Fill bundle identifier/version from the signed app's Info.plist.
         info = plistlib.loads((app_bundle / "Info.plist").read_bytes())
         manifest["items"][0]["metadata"]["bundle-identifier"] = info.get("CFBundleIdentifier", "")
         manifest["items"][0]["metadata"]["version"] = info.get("CFBundleShortVersionString", info.get("CFBundleVersion", "1.0"))
