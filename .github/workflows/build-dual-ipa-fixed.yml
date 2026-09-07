@@ -23,6 +23,9 @@ jobs:
       - name: Apply IPA import fix
         run: python3 scripts/fix_ipa_import.py
 
+      - name: Add signing service certificate box
+        run: python3 scripts/add_signing_service_certificates.py
+
       - name: Generate Xcode project
         working-directory: DualIPAWrapper
         run: |
