@@ -21,7 +21,7 @@ jobs:
         run: brew install xcodegen
 
       - name: Apply IPA import fix
-        run: python3 scripts/harden_ipa_import.py
+        run: python3 scripts/fix_ipa_import.py
 
       - name: Generate Xcode project
         working-directory: DualIPAWrapper
