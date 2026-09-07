@@ -1,0 +1,63 @@
+name: Build unsigned IPA (2)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '15.4'
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: KSignInspiredCertificates
+        run: |
+          set -e
+          xcodegen generate
+          PROJECT_FILE="KSignInspiredCertificates.xcodeproj/project.pbxproj"
+          if grep -q 'objectVersion = 77;' "$PROJECT_FILE"; then
+            sed -i '' 's/objectVersion = 77;/objectVersion = 56;/' "$PROJECT_FILE"
+          fi
+
+      - name: Build unsigned app
+        working-directory: KSignInspiredCertificates
+        run: |
+          set -e
+          xcodebuild \
+            -project KSignInspiredCertificates.xcodeproj \
+            -scheme KSignInspiredCertificates \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath "$GITHUB_WORKSPACE/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Package IPA
+        shell: bash
+        run: |
+          set -e
+          APP_PATH=$(find build/Build/Products -type d -name '*.app' -print -quit)
+          test -n "$APP_PATH"
+          rm -rf Payload KSignInspired-unsigned-2.ipa
+          mkdir Payload
+          cp -R "$APP_PATH" Payload/
+          /usr/bin/zip -qry KSignInspired-unsigned-2.ipa Payload
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KSignInspired-unsigned-ipa-2
+          path: KSignInspired-unsigned-2.ipa
+          if-no-files-found: error
