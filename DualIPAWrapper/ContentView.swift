@@ -34,9 +34,7 @@ struct AppleSignInButton: UIViewRepresentable {
     final class Coordinator: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
         private let parent: AppleSignInButton
 
-        init(_ parent: AppleSignInButton) {
-            self.parent = parent
-        }
+        init(_ parent: AppleSignInButton) { self.parent = parent }
 
         @objc func signIn() {
             let request = ASAuthorizationAppleIDProvider().createRequest()
@@ -51,9 +49,7 @@ struct AppleSignInButton: UIViewRepresentable {
             if let credential = authorization.credential as? ASAuthorizationAppleIDCredential {
                 DispatchQueue.main.async { self.parent.onCompletion(.success(credential)) }
             } else {
-                DispatchQueue.main.async {
-                    self.parent.onCompletion(.failure(CocoaError(.coderReadCorrupt)))
-                }
+                DispatchQueue.main.async { self.parent.onCompletion(.failure(CocoaError(.coderReadCorrupt))) }
             }
         }
 
@@ -87,11 +83,7 @@ struct IPAFilePicker: UIViewControllerRepresentable {
 
     final class Coordinator: NSObject, UIDocumentPickerDelegate {
         private let parent: IPAFilePicker
-
-        init(_ parent: IPAFilePicker) {
-            self.parent = parent
-            super.init()
-        }
+        init(_ parent: IPAFilePicker) { self.parent = parent; super.init() }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
             DispatchQueue.main.async { self.parent.onPick(urls) }
@@ -105,6 +97,7 @@ struct IPAFilePicker: UIViewControllerRepresentable {
 
 struct ContentView: View {
     @AppStorage("appleSignedIn") private var appleSignedIn = false
+    @AppStorage("enterpriseMode") private var enterpriseMode = false
     @State private var apps: [GuestApp] = []
     @State private var showingImporter = false
     @State private var selectedApp: GuestApp?
@@ -117,7 +110,7 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if appleSignedIn {
+            if appleSignedIn || enterpriseMode {
                 libraryView
             } else {
                 loginView
@@ -130,7 +123,7 @@ struct ContentView: View {
     private var loginView: some View {
         ZStack {
             Color(red: 0.055, green: 0.055, blue: 0.07).ignoresSafeArea()
-            VStack(spacing: 24) {
+            VStack(spacing: 22) {
                 Spacer()
                 Image(systemName: "square.stack.3d.up.fill")
                     .font(.system(size: 70))
@@ -140,21 +133,52 @@ struct ContentView: View {
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 32)
+
                 AppleSignInButton { result in
                     switch result {
                     case .success:
                         appleSignedIn = true
+                        enterpriseMode = false
                     case .failure(let error):
                         message = "Apple sign-in failed: \(error.localizedDescription)"
                     }
                 }
                 .frame(height: 52)
                 .padding(.horizontal, 28)
+
                 Text("Your Apple Account password is handled by Apple and is never entered into Dual IPA.")
                     .font(.caption)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.tertiary)
                     .padding(.horizontal, 36)
+
+                Divider().padding(.horizontal, 36)
+
+                Button {
+                    enterpriseMode = true
+                    appleSignedIn = false
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "building.2.fill")
+                        Text("Use Enterprise Certificates")
+                            .fontWeight(.semibold)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(.thinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 28)
+
+                Text("Use this option only with an enterprise certificate you are authorized to use. Dual IPA does not collect Apple Account passwords or third-party certificate credentials.")
+                    .font(.caption2)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 34)
                 Spacer()
             }
         }
@@ -170,7 +194,7 @@ struct ContentView: View {
                     ContentUnavailableView {
                         Label("No Apps", systemImage: "square.stack.3d.up")
                     } description: {
-                        Text("Import an IPA to add it to your app library.")
+                        Text(enterpriseMode ? "Authorized enterprise signing mode is selected. Import an IPA to add it to your library." : "Import an IPA to add it to your app library.")
                     } actions: {
                         Button("Import IPA") { showingImporter = true }
                             .buttonStyle(.borderedProminent)
@@ -206,7 +230,10 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { showingImporter = true } label: { Image(systemName: "plus") }
-                    Button("Sign Out") { appleSignedIn = false }
+                    Button("Sign Out") {
+                        appleSignedIn = false
+                        enterpriseMode = false
+                    }
                 }
             }
             .sheet(isPresented: $showingImporter) {
@@ -237,9 +264,7 @@ struct ContentView: View {
                 defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
                 do {
                     let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-                    guard data.count >= 4,
-                          data[0] == 0x50, data[1] == 0x4B,
-                          data[2] == 0x03, data[3] == 0x04 else {
+                    guard data.count >= 4, data[0] == 0x50, data[1] == 0x4B, data[2] == 0x03, data[3] == 0x04 else {
                         throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "The selected file is not a valid IPA archive."])
                     }
                     let id = UUID()
@@ -294,10 +319,15 @@ struct GuestContainerView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 20) {
-                Image(systemName: "app.fill").font(.system(size: 64)).frame(width: 110, height: 110).background(.thinMaterial).clipShape(RoundedRectangle(cornerRadius: 24))
+                Image(systemName: "app.fill")
+                    .font(.system(size: 64))
+                    .frame(width: 110, height: 110)
+                    .background(.thinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 24))
                 Text(app.displayName).font(.title.bold())
                 Text("Guest app container").foregroundStyle(.secondary)
-                Text(FileManager.default.fileExists(atPath: storedIPAURL.path) ? "IPA stored successfully" : "IPA file is missing").font(.footnote).foregroundStyle(.secondary)
+                Text(FileManager.default.fileExists(atPath: storedIPAURL.path) ? "IPA stored successfully" : "IPA file is missing")
+                    .font(.footnote).foregroundStyle(.secondary)
                 Text("The IPA is stored in this app's private library. Signing and installing an app still requires Apple's permitted signing and installation mechanisms.")
                     .font(.footnote).multilineTextAlignment(.center).foregroundStyle(.secondary).padding(.horizontal)
                 Spacer()
