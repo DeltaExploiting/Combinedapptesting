@@ -18,6 +18,19 @@ jobs:
           p12-file-base64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
           p12-password: ${{ secrets.P12_PASSWORD }}
 
+      - name: Select imported signing identity
+        env:
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          IDENTITY="$SIGNING_IDENTITY"
+          if [ -z "$IDENTITY" ]; then
+            IDENTITY=$(security find-identity -v -p codesigning | awk -F '"' '/"Apple/ || /"iPhone/ {print $2; exit}')
+          fi
+          test -n "$IDENTITY" || { echo 'No usable Apple/iPhone codesigning identity was imported.'; exit 1; }
+          echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "Using the supplied compatible Apple signing identity."
+
       - name: Install provisioning profiles
         env:
           ESIGN_PROFILE: ${{ secrets.ESIGN_PROFILE_BASE64 }}
@@ -34,6 +47,8 @@ jobs:
             UUID=$(security cms -D -i "$profile" | /usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin)
             cp "$profile" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.mobileprovision"
             case "$profile" in
+              /tmp/esign.mobileprovision) echo "ESIGN_PROFILE_UUID=$UUID" >> "$GITHUB_ENV" ;;
+              /tmp/sideinstaller.mobileprovision) echo "SIDEINSTALLER_PROFILE_UUID=$UUID" >> "$GITHUB_ENV" ;;
               /tmp/dualwrapper.mobileprovision) echo "DUALWRAPPER_PROFILE_UUID=$UUID" >> "$GITHUB_ENV" ;;
             esac
           done
@@ -72,16 +87,8 @@ with p.open('wb') as f:
 PY
 
       - name: Sign ESign and SideInstaller
-        env:
-          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
-          IDENTITY="$SIGNING_IDENTITY"
-          if [ -z "$IDENTITY" ]; then
-            IDENTITY=$(security find-identity -v -p codesigning | awk -F '"' '/"Apple/ || /"iPhone/ {print $2; exit}')
-          fi
-          test -n "$IDENTITY" || { echo 'No usable Apple/iPhone codesigning identity was imported.'; exit 1; }
-          echo "Using signing identity: $IDENTITY"
 
           sign_app() {
             local APP="$1"
@@ -96,15 +103,15 @@ PY
             cp "$PROFILE" "$APP/embedded.mobileprovision"
 
             find "$APP" -type d -name '*.framework' -print | sort -r | while read -r nested; do
-              codesign --force --sign "$IDENTITY" --timestamp=none "$nested"
+              codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp=none "$nested"
             done
             find "$APP" -type d -name '*.appex' -print | sort -r | while read -r nested; do
-              codesign --force --sign "$IDENTITY" --timestamp=none "$nested"
+              codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp=none "$nested"
             done
             find "$APP" -type f -perm -111 -print | sort -r | while read -r executable; do
-              codesign --force --sign "$IDENTITY" --timestamp=none "$executable" || true
+              codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp=none "$executable" || true
             done
-            codesign --force --sign "$IDENTITY" --entitlements "$ENTITLEMENTS" --timestamp=none "$APP"
+            codesign --force --sign "$APPLE_SIGNING_IDENTITY" --entitlements "$ENTITLEMENTS" --timestamp=none "$APP"
             codesign --verify --deep --strict --verbose=2 "$APP"
           }
 
@@ -143,14 +150,8 @@ PY
         working-directory: DualIPAWrapper
         env:
           DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
-          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
-          IDENTITY="$SIGNING_IDENTITY"
-          if [ -z "$IDENTITY" ]; then
-            IDENTITY=$(security find-identity -v -p codesigning | awk -F '"' '/"Apple/ || /"iPhone/ {print $2; exit}')
-          fi
-          test -n "$IDENTITY" || { echo 'No signing identity available.'; exit 1; }
           xcodebuild \
             -project DualIPAWrapper.xcodeproj \
             -scheme DualIPAWrapper \
@@ -158,9 +159,9 @@ PY
             -configuration Release \
             -derivedDataPath "$GITHUB_WORKSPACE/build" \
             CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="$IDENTITY" \
+            CODE_SIGN_IDENTITY="$APPLE_SIGNING_IDENTITY" \
             DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
-            PROVISIONING_PROFILE_SPECIFIER="$DUALWRAPPER_PROFILE_UUID" \
+            PROVISIONING_PROFILE="$DUALWRAPPER_PROFILE_UUID" \
             build
 
       - name: Package signed DualWrapper IPA
