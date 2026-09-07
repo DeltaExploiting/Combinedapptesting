@@ -1,0 +1,16 @@
+name: KSignInspiredCertificates
+options:
+  bundleIdPrefix: com.example
+targets:
+  KSignInspiredCertificates:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - KSignInspiredCertificatesApp.swift
+      - CertificatesView.swift
+      - RootView.swift
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.example.KSignInspiredCertificates
+      SWIFT_VERSION: "5.0"
+      INFOPLIST_KEY_UILaunchScreen_Generation: YES
