@@ -35,6 +35,30 @@ jobs:
               p.write_text(s)
           PY
 
+      - name: Fix IPA document picker import
+        working-directory: DualIPAWrapper
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('ContentView.swift')
+          s = p.read_text()
+          old = 'let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.item])\n        picker.allowsMultipleSelection = true\n        picker.delegate = context.coordinator'
+          new = 'let picker = UIDocumentPickerViewController(documentTypes: [UTType.item.identifier], in: .import)\n        picker.allowsMultipleSelection = true\n        picker.delegate = context.coordinator'
+          if old in s:
+              s = s.replace(old, new, 1)
+          else:
+              raise SystemExit('IPA picker initializer not found')
+
+          old_callback = 'func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {\n            parent.picked(urls)\n        }'
+          new_callback = 'func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {\n            DispatchQueue.main.async {\n                self.parent.picked(urls)\n            }\n        }'
+          if old_callback in s:
+              s = s.replace(old_callback, new_callback, 1)
+          else:
+              raise SystemExit('IPA picker callback not found')
+          p.write_text(s)
+          PY
+
       - name: Generate Xcode project
         working-directory: DualIPAWrapper
         run: |
