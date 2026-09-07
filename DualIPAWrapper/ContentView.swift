@@ -23,12 +23,11 @@ struct IPAFilePicker: UIViewControllerRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        // Use generic public.data instead of an IPA UTI. iOS Files does not
-        // consistently advertise .ipa files as a selectable custom type.
-        // The app validates the selected file after the picker returns.
+        // Use the broadest system document type so Files does not disable
+        // the Open button for .ipa files with unusual/unknown UTIs.
         let picker = UIDocumentPickerViewController(
-            forOpeningContentTypes: [UTType.data],
-            asCopy: true
+            documentTypes: [UTType.item.identifier],
+            in: .import
         )
         picker.allowsMultipleSelection = true
         picker.delegate = context.coordinator
@@ -157,14 +156,14 @@ struct ContentView: View {
                 defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
 
                 do {
-                    // Accept IPA files regardless of their original filename.
-                    // An IPA is a ZIP archive containing a Payload directory.
+                    // Accept an IPA regardless of its filename or extension.
+                    // Standard IPAs are ZIP archives beginning with PK\x03\x04.
                     let data = try Data(contentsOf: url, options: [.mappedIfSafe])
                     guard data.count >= 4,
                           data[0] == 0x50, data[1] == 0x4B,
                           data[2] == 0x03, data[3] == 0x04 else {
                         throw CocoaError(.fileReadCorruptFile, userInfo: [
-                            NSLocalizedDescriptionKey: "This file is not a valid IPA/ZIP archive."
+                            NSLocalizedDescriptionKey: "The selected file is not a valid IPA archive."
                         ])
                     }
 
