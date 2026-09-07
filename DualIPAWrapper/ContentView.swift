@@ -36,8 +36,53 @@ struct ContentView:View{@AppStorage("appleSignedIn")var apple=false;@AppStorage(
  func save(){try?FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true);try?JSONEncoder().encode(apps).write(to:dir.appendingPathComponent("apps.json"))}
  func load(){guard let d=try?Data(contentsOf:dir.appendingPathComponent("apps.json")),let x=try?JSONDecoder().decode([GuestApp].self,from:d)else{return};apps=x}}
 
-struct Launch:View{let app:GuestApp;let enterprise:Bool;let certs:Set<String>;let url:String;@Binding var signing:Bool;let message:(String)->Void;@Environment(\.dismiss)var dismiss;let base=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("DualIPA",isDirectory:true);var ipa:URL{base.appendingPathComponent(app.storedFileName)};var assets:URL{base.appendingPathComponent("SigningAssets",isDirectory:true)}
- var body:some View{NavigationStack{VStack(spacing:18){Image(systemName:"app.fill").font(.system(size:64));Text(app.displayName).font(.title.bold());if enterprise{Text(certs.count==1 ? "Certificate selected":"Select exactly one certificate").foregroundStyle(certs.count==1 ? .secondary:.orange);Button{sign()}label:{Label(signing ? "Signing…":"Sign & Launch",systemImage:"signature")}.buttonStyle(.borderedProminent).disabled(signing)};Spacer()}.padding().navigationTitle("Launch").toolbar{Button("Done"){dismiss()}}}}
- func sign(){guard certs.count==1 else{message("Select exactly one authorized certificate.");return};let p=assets.appendingPathComponent("signing.p12"),m=assets.appendingPathComponent("signing.mobileprovision");guard FileManager.default.fileExists(atPath:p.path),FileManager.default.fileExists(atPath:m.path) else{message("Import your authorized P12 and mobileprovision in Signing Service settings first.");return};guard let i=try?Data(contentsOf:ipa),let pd=try?Data(contentsOf:p),let md=try?Data(contentsOf:m),let endpoint=URL(string:url),endpoint.scheme=="https" else{message("Signing configuration is invalid.");return};signing=true;let b="B-\(UUID())";var r=URLRequest(url:endpoint);r.httpMethod="POST";r.setValue("multipart/form-data; boundary=\(b)",forHTTPHeaderField:"Content-Type");var body=Data();func a(_ s:String){body.append(Data(s.utf8))};a("--\(b)\r\nContent-Disposition: form-data; name=\"ipa\"; filename=\"app.ipa\"\r\nContent-Type: application/octet-stream\r\n\r\n");body.append(i);a("\r\n--\(b)\r\nContent-Disposition: form-data; name=\"p12\"; filename=\"signing.p12\"\r\nContent-Type: application/x-pkcs12\r\n\r\n");body.append(pd);a("\r\n--\(b)\r\nContent-Disposition: form-data; name=\"provision\"; filename=\"signing.mobileprovision\"\r\nContent-Type: application/octet-stream\r\n\r\n");body.append(md);a("\r\n");let pw=KC.s.get();if !pw.isEmpty{a("--\(b)\r\nContent-Disposition: form-data; name=\"p12_password\"\r\n\r\n\(pw)\r\n")};a("--\(b)--\r\n");r.httpBody=body;URLSession.shared.dataTask(with:r){d,res,e in DispatchQueue.main.async{signing=false;if let e{message("Signing failed: \(e.localizedDescription)");return};guard let h=res as?HTTPURLResponse,(200..<300).contains(h.statusCode),let d else{message("Signing service returned an error.");return};if let j=try?JSONDecoder().decode(R.self,from:d),let path=j.install_url{let u=URL(string:path.hasPrefix("http") ? path : "https://flarestore.app\(path)")!;UIApplication.shared.open(u);message("Signing finished. Installation page opened.");return};if d.count>4,d[0]==0x50,d[1]==0x4B{let out=assets.appendingPathComponent("signed-\(UUID()).ipa");try?d.write(to:out);message("Signed IPA received and saved in the app.");return};message("Signing service returned an unexpected response.")}}}.resume()}
- struct R:Decodable{let install_url:String?}
+struct Launch: View {
+    let app: GuestApp
+    let enterprise: Bool
+    let certs: Set<String>
+    let url: String
+    @Binding var signing: Bool
+    let message: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    private var base: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("DualIPA", isDirectory: true) }
+    private var ipa: URL { base.appendingPathComponent(app.storedFileName) }
+    private var assets: URL { base.appendingPathComponent("SigningAssets", isDirectory: true) }
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 18) {
+                Image(systemName: "app.fill").font(.system(size: 64))
+                Text(app.displayName).font(.title.bold())
+                if enterprise {
+                    Text(certs.count == 1 ? "Certificate selected" : "Select exactly one certificate").foregroundStyle(certs.count == 1 ? .secondary : .orange)
+                    Button { sign() } label: { Label(signing ? "Signing…" : "Sign & Launch", systemImage: "signature") }.buttonStyle(.borderedProminent).disabled(signing)
+                }
+                Spacer()
+            }.padding().navigationTitle("Launch").toolbar { Button("Done") { dismiss() } }
+        }
+    }
+    private func sign() {
+        guard certs.count == 1 else { message("Select exactly one authorized certificate."); return }
+        let p12 = assets.appendingPathComponent("signing.p12")
+        let provision = assets.appendingPathComponent("signing.mobileprovision")
+        guard FileManager.default.fileExists(atPath: p12.path), FileManager.default.fileExists(atPath: provision.path) else { message("Import your authorized P12 and mobileprovision in Signing Service settings first."); return }
+        guard let ipaData = try? Data(contentsOf: ipa), let p12Data = try? Data(contentsOf: p12), let provisionData = try? Data(contentsOf: provision), let endpoint = URL(string: url), endpoint.scheme == "https" else { message("Signing configuration is invalid."); return }
+        signing = true
+        let boundary = "B-\(UUID().uuidString)"
+        var request = URLRequest(url: endpoint); request.httpMethod = "POST"; request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        var body = Data(); func append(_ value: String) { body.append(Data(value.utf8)) }
+        append("--\(boundary)\r\nContent-Disposition: form-data; name=\"ipa\"; filename=\"app.ipa\"\r\nContent-Type: application/octet-stream\r\n\r\n"); body.append(ipaData)
+        append("\r\n--\(boundary)\r\nContent-Disposition: form-data; name=\"p12\"; filename=\"signing.p12\"\r\nContent-Type: application/x-pkcs12\r\n\r\n"); body.append(p12Data)
+        append("\r\n--\(boundary)\r\nContent-Disposition: form-data; name=\"provision\"; filename=\"signing.mobileprovision\"\r\nContent-Type: application/octet-stream\r\n\r\n"); body.append(provisionData); append("\r\n")
+        let password = KC.s.get(); if !password.isEmpty { append("--\(boundary)\r\nContent-Disposition: form-data; name=\"p12_password\"\r\n\r\n\(password)\r\n") }
+        append("--\(boundary)--\r\n"); request.httpBody = body
+        URLSession.shared.dataTask(with: request) { data, response, error in DispatchQueue.main.async {
+            signing = false
+            if let error { message("Signing failed: \(error.localizedDescription)"); return }
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), let data else { message("Signing service returned an error."); return }
+            if let result = try? JSONDecoder().decode(SigningResult.self, from: data), let path = result.installURL { let installURL = URL(string: path.hasPrefix("http") ? path : "https://flarestore.app\(path)")!; UIApplication.shared.open(installURL); message("Signing finished. Installation page opened."); return }
+            if data.count > 4, data[0] == 0x50, data[1] == 0x4B, data[2] == 0x03, data[3] == 0x04 { let output = assets.appendingPathComponent("signed-\(UUID().uuidString).ipa"); do { try data.write(to: output, options: .atomic); message("Signed IPA received and saved in the app.") } catch { message("Signed IPA received but could not be saved: \(error.localizedDescription)") }; return }
+            message("Signing service returned an unexpected response.")
+        }}.resume()
+    }
+    struct SigningResult: Decodable { let installURL: String?; enum CodingKeys: String, CodingKey { case installURL = "install_url" } }
 }
