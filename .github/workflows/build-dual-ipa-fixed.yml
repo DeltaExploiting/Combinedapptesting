@@ -17,10 +17,10 @@ jobs:
           xcode-version: '15.4'
       - name: Install XcodeGen
         run: brew install xcodegen
-      - name: Apply IPA import fix
+      - name: Fix IPA import handling
         run: python3 scripts/fix_ipa_import.py
-      - name: Add signing-service certificate box
-        run: python3 scripts/add_signing_certificate_box.py
+      - name: Move signing credentials to service UI
+        run: python3 scripts/migrate_signing_service_ui.py
       - name: Generate Xcode project
         working-directory: DualIPAWrapper
         run: |
@@ -57,6 +57,6 @@ jobs:
       - name: Upload Dual IPA
         uses: actions/upload-artifact@v4
         with:
-          name: DualIPAWrapper-unsigned
+          name: DualIPAWrapper-unsigned-fixed
           path: dist/DualIPAWrapper-unsigned.ipa
           if-no-files-found: error
