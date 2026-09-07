@@ -12,17 +12,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Download IPA resources from release 62828
+        run: |
+          set -e
+          mkdir -p DualIPAWrapper/Resources
+          curl -fL --retry 3 -o DualIPAWrapper/Resources/esign_5.0.2_unsigned.ipa \
+            https://github.com/DeltaExploiting/Combinedapptesting/releases/download/62828/esign_5.0.2_unsigned.ipa
+          curl -fL --retry 3 -o DualIPAWrapper/Resources/SideInstaller.ipa \
+            https://github.com/DeltaExploiting/Combinedapptesting/releases/download/62828/SideInstaller.ipa
+          test -s DualIPAWrapper/Resources/esign_5.0.2_unsigned.ipa
+          test -s DualIPAWrapper/Resources/SideInstaller.ipa
+          echo "Both IPA resources downloaded successfully."
+
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: '15.4'
-
-      - name: Verify bundled IPA files
-        run: |
-          set -e
-          test -f DualIPAWrapper/Resources/esign_5.0.2_unsigned.ipa
-          test -f DualIPAWrapper/Resources/SideInstaller.ipa
-          echo "Both IPA resources are present."
 
       - name: Install XcodeGen
         run: brew install xcodegen
