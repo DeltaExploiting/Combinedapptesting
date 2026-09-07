@@ -12,17 +12,46 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download IPA resources from release 62828
+      - name: Download IPA resources
         run: |
           set -e
-          mkdir -p DualIPAWrapper/Resources
+          mkdir -p DualIPAWrapper/Resources /tmp/sideinstaller-patch
           curl -fL --retry 3 -o DualIPAWrapper/Resources/esign_5.0.2_unsigned.ipa \
             https://github.com/DeltaExploiting/Combinedapptesting/releases/download/62828/esign_5.0.2_unsigned.ipa
-          curl -fL --retry 3 -o DualIPAWrapper/Resources/SideInstaller.ipa \
-            https://github.com/DeltaExploiting/Combinedapptesting/releases/download/62828/SideInstaller.ipa
+          curl -fL --retry 3 -o /tmp/sideinstaller-patch/SideInstaller-original.ipa \
+            https://github.com/DeltaExploiting/Combinedapptesting/releases/download/Sideinstalltest/SideInstaller-sideinstaller-scheme.ipa
           test -s DualIPAWrapper/Resources/esign_5.0.2_unsigned.ipa
+          test -s /tmp/sideinstaller-patch/SideInstaller-original.ipa
+
+          unzip -q /tmp/sideinstaller-patch/SideInstaller-original.ipa -d /tmp/sideinstaller-patch/unpacked
+          PLIST=$(find /tmp/sideinstaller-patch/unpacked/Payload -maxdepth 2 -name Info.plist -print -quit)
+          test -n "$PLIST"
+
+          python3 - "$PLIST" <<'PY'
+import plistlib
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+with path.open('rb') as f:
+    plist = plistlib.load(f)
+
+url_types = plist.setdefault('CFBundleURLTypes', [])
+if not any('sideinstaller' in item.get('CFBundleURLSchemes', []) for item in url_types):
+    url_types.append({
+        'CFBundleTypeRole': 'Editor',
+        'CFBundleURLName': plist.get('CFBundleIdentifier', 'com.frizzlem.sideinstaller'),
+        'CFBundleURLSchemes': ['sideinstaller'],
+    })
+
+with path.open('wb') as f:
+    plistlib.dump(plist, f, fmt=plistlib.FMT_BINARY)
+PY
+
+          rm -f DualIPAWrapper/Resources/SideInstaller.ipa
+          (cd /tmp/sideinstaller-patch/unpacked && /usr/bin/zip -qry "$GITHUB_WORKSPACE/DualIPAWrapper/Resources/SideInstaller.ipa" Payload)
           test -s DualIPAWrapper/Resources/SideInstaller.ipa
-          echo "Both IPA resources downloaded successfully."
+          echo "ESign and the SideInstaller IPA with sideinstaller:// support are ready."
 
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
