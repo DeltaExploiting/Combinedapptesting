@@ -20,6 +20,21 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Fix SwiftUI certificate color expression
+        working-directory: DualIPAWrapper
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('ContentView.swift')
+          s = p.read_text()
+          old = '.foregroundStyle(selected.contains(certificate.name) ? .tint : .secondary)'
+          new = '.foregroundStyle(selected.contains(certificate.name) ? Color.accentColor : Color.secondary)'
+          if old in s:
+              s = s.replace(old, new)
+              p.write_text(s)
+          PY
+
       - name: Generate Xcode project
         working-directory: DualIPAWrapper
         run: |
