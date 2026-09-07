@@ -11,12 +11,109 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: '15.4'
+
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Harden IPA picker and import handling
+        working-directory: DualIPAWrapper
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('ContentView.swift')
+          s = p.read_text()
+
+          # Use a broad data/document type so Files/iCloud providers expose .ipa files
+          # even when the provider has no registered IPA UTI.
+          s = s.replace(
+              'UIDocumentPickerViewController(forOpeningContentTypes: [UTType.item])',
+              'UIDocumentPickerViewController(forOpeningContentTypes: [UTType.data, UTType.archive])'
+          )
+
+          # Replace the importer with a security-scoped, coordinated copy. This makes
+          # imports reliable across Files, iCloud Drive, On My iPhone and third-party
+          # document providers, and gives a clear error instead of silently dropping it.
+          pattern = r'    private func importIPAs\(_ urls: \[URL\]\) \{.*?\n    \}\n\n    private func saveApps\(\)'
+          replacement = '''    private func importIPAs(_ urls: [URL]) {
+          try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+          var importedAny = false
+          var failedAny = false
+
+          for sourceURL in urls {
+              let scoped = sourceURL.startAccessingSecurityScopedResource()
+              defer { if scoped { sourceURL.stopAccessingSecurityScopedResource() } }
+
+              let tempURL = FileManager.default.temporaryDirectory
+                  .appendingPathComponent("IPA-" + UUID().uuidString + ".ipa")
+              var copySucceeded = false
+
+              let coordinator = NSFileCoordinator(filePresenter: nil)
+              var coordinationError: NSError?
+              coordinator.coordinate(readingItemAt: sourceURL, options: [], error: &coordinationError) { coordinatedURL in
+                  do {
+                      try FileManager.default.copyItem(at: coordinatedURL, to: tempURL)
+                      copySucceeded = true
+                  } catch {
+                      failedAny = true
+                  }
+              }
+
+              guard copySucceeded,
+                    let data = try? Data(contentsOf: tempURL),
+                    data.count >= 4,
+                    data.prefix(4).elementsEqual(Data([0x50, 0x4B, 0x03, 0x04])) else {
+                  try? FileManager.default.removeItem(at: tempURL)
+                  failedAny = true
+                  continue
+              }
+
+              let id = UUID()
+              let stored = "\\(id).ipa"
+              let destination = directory.appendingPathComponent(stored)
+
+              do {
+                  try FileManager.default.moveItem(at: tempURL, to: destination)
+                  let displayName = sourceURL.deletingPathExtension().lastPathComponent
+                  apps.append(GuestApp(
+                      id: id,
+                      fileName: sourceURL.lastPathComponent,
+                      displayName: displayName.isEmpty ? "Imported IPA" : displayName,
+                      version: "Imported",
+                      importedAt: Date(),
+                      storedFileName: stored
+                  ))
+                  importedAny = true
+              } catch {
+                  try? FileManager.default.removeItem(at: tempURL)
+                  failedAny = true
+              }
+          }
+
+          saveApps()
+
+          if importedAny && failedAny {
+              message = "Some IPA files were imported, but one or more files could not be read."
+          } else if !importedAny {
+              message = "Could not import the selected file. Select a valid .ipa file from Files."
+          }
+      }
+
+      private func saveApps()'''
+          new_s, count = re.subn(pattern, replacement, s, count=1, flags=re.S)
+          if count != 1:
+              raise SystemExit('Could not locate importIPAs function; refusing to build an unpatched IPA.')
+          p.write_text(new_s)
+          PY
+
       - name: Generate Xcode project
         working-directory: DualIPAWrapper
         run: |
@@ -26,11 +123,21 @@ jobs:
           if grep -q 'objectVersion = 77;' "$PROJECT_FILE"; then
             sed -i '' 's/objectVersion = 77;/objectVersion = 56;/' "$PROJECT_FILE"
           fi
+
       - name: Build unsigned Dual IPA
         working-directory: DualIPAWrapper
         run: |
           set -euo pipefail
-          xcodebuild -project DualIPAWrapper.xcodeproj -scheme DualIPAWrapper -sdk iphoneos -configuration Release -derivedDataPath "$GITHUB_WORKSPACE/build" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+          xcodebuild \
+            -project DualIPAWrapper.xcodeproj \
+            -scheme DualIPAWrapper \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath "$GITHUB_WORKSPACE/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
       - name: Package Dual IPA
         run: |
           set -euo pipefail
@@ -40,6 +147,7 @@ jobs:
           mkdir -p Payload dist
           cp -R "$APP_PATH" Payload/
           /usr/bin/zip -qry dist/DualIPAWrapper-unsigned.ipa Payload
+
       - name: Upload Dual IPA
         uses: actions/upload-artifact@v4
         with:
