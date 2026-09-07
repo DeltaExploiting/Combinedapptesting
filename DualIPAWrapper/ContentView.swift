@@ -33,35 +33,51 @@ struct AppleSignInButton: UIViewRepresentable {
 
     final class Coordinator: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
         private let parent: AppleSignInButton
+        private var authorizationController: ASAuthorizationController?
 
-        init(_ parent: AppleSignInButton) { self.parent = parent }
+        init(_ parent: AppleSignInButton) {
+            self.parent = parent
+            super.init()
+        }
 
         @objc func signIn() {
             let request = ASAuthorizationAppleIDProvider().createRequest()
             request.requestedScopes = [.fullName, .email]
+
             let controller = ASAuthorizationController(authorizationRequests: [request])
             controller.delegate = self
             controller.presentationContextProvider = self
+
+            // Keep a strong reference until Apple finishes the authorization flow.
+            authorizationController = controller
             controller.performRequests()
         }
 
         func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
-            if let credential = authorization.credential as? ASAuthorizationAppleIDCredential {
-                DispatchQueue.main.async { self.parent.onCompletion(.success(credential)) }
-            } else {
-                DispatchQueue.main.async { self.parent.onCompletion(.failure(CocoaError(.coderReadCorrupt))) }
+            defer { authorizationController = nil }
+
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+                let error = NSError(
+                    domain: "DualIPA.AppleSignIn",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Apple returned an unexpected authorization credential."]
+                )
+                DispatchQueue.main.async { self.parent.onCompletion(.failure(error)) }
+                return
             }
+
+            DispatchQueue.main.async { self.parent.onCompletion(.success(credential)) }
         }
 
         func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+            authorizationController = nil
             DispatchQueue.main.async { self.parent.onCompletion(.failure(error)) }
         }
 
         func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-            UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .flatMap { $0.windows }
-                .first(where: { $0.isKeyWindow }) ?? ASPresentationAnchor()
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            let activeScene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+            return activeScene?.windows.first(where: { $0.isKeyWindow }) ?? activeScene?.windows.first ?? ASPresentationAnchor()
         }
     }
 }
