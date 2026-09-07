@@ -105,11 +105,8 @@ struct CertificateSelectionView: View {
             List {
                 Section {
                     Button(selected.count == enterpriseCertificates.count ? "Deselect All" : "Select All") {
-                        if selected.count == enterpriseCertificates.count {
-                            selected.removeAll()
-                        } else {
-                            selected = Set(enterpriseCertificates.map(\.name))
-                        }
+                        if selected.count == enterpriseCertificates.count { selected.removeAll() }
+                        else { selected = Set(enterpriseCertificates.map(\.name)) }
                     }
                 }
                 Section("Enterprise Certificates") {
@@ -123,51 +120,75 @@ struct CertificateSelectionView: View {
                                     .foregroundStyle(selected.contains(certificate.name) ? .tint : .secondary)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(certificate.name).foregroundStyle(.primary)
-                                    Text("Authorized certificate selection")
-                                        .font(.caption2).foregroundStyle(.secondary)
+                                    Text("Authorized certificate selection").font(.caption2).foregroundStyle(.secondary)
                                 }
                                 Spacer()
                             }
-                        }
-                        .buttonStyle(.plain)
+                        }.buttonStyle(.plain)
                     }
                 }
                 Section {
-                    Text("Only use certificates you are authorized to use. This screen selects certificate identities; it does not import or expose private signing keys.")
+                    Text("Only use certificates you are authorized to use. Private signing keys stay on the authorized signing service and are never embedded in this app.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Certificates")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-            }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
         }
         .preferredColorScheme(.dark)
     }
 }
 
+struct SigningServiceSettingsView: View {
+    @AppStorage("signingServiceURL") private var signingServiceURL = ""
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Authorized Signing Service") {
+                    TextField("https://your-domain.example/sign", text: $signingServiceURL)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled()
+                }
+                Section {
+                    Text("The service should accept the IPA and selected certificate name, sign with credentials you control or are authorized to use, and return JSON containing an HTTPS installation-manifest URL. Do not put P12 passwords or private keys in this app.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Signing Service")
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+struct SigningResponse: Decodable {
+    let installManifestURL: String
+}
+
 struct ContentView: View {
     @AppStorage("appleSignedIn") private var appleSignedIn = false
     @AppStorage("enterpriseMode") private var enterpriseMode = false
+    @AppStorage("signingServiceURL") private var signingServiceURL = ""
     @State private var apps: [GuestApp] = []
     @State private var showingImporter = false
     @State private var showingCertificates = false
+    @State private var showingSigningSettings = false
     @State private var selectedCertificates: Set<String> = []
     @State private var selectedApp: GuestApp?
     @State private var message = ""
+    @State private var signing = false
 
     private var storageURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("DualIPA", isDirectory: true)
     }
 
     var body: some View {
-        Group {
-            if appleSignedIn || enterpriseMode { libraryView } else { loginView }
-        }
-        .preferredColorScheme(.dark)
-        .task { loadApps() }
+        Group { if appleSignedIn || enterpriseMode { libraryView } else { loginView } }
+            .preferredColorScheme(.dark)
+            .task { loadApps() }
     }
 
     private var loginView: some View {
@@ -183,8 +204,7 @@ struct ContentView: View {
                     case .success:
                         appleSignedIn = true
                         enterpriseMode = false
-                    case .failure(let error):
-                        message = "Apple sign-in failed: \(error.localizedDescription)"
+                    case .failure(let error): message = "Apple sign-in failed: \(error.localizedDescription)"
                     }
                 }
                 .frame(height: 52).padding(.horizontal, 28)
@@ -250,10 +270,10 @@ struct ContentView: View {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { showingImporter = true } label: { Image(systemName: "plus") }
                     if enterpriseMode {
-                        Button { showingCertificates = true } label: {
-                            Label("Certificates", systemImage: "checkmark.seal")
-                        }
+                        Button { showingCertificates = true } label: { Label("Certificates", systemImage: "checkmark.seal") }
                         .accessibilityLabel("Certificates")
+                        Button { showingSigningSettings = true } label: { Image(systemName: "server.rack") }
+                            .accessibilityLabel("Signing Service")
                     }
                     Button("Sign Out") { appleSignedIn = false; enterpriseMode = false }
                 }
@@ -261,10 +281,9 @@ struct ContentView: View {
             .sheet(isPresented: $showingImporter) {
                 IPAFilePicker(onPick: { urls in showingImporter = false; importIPAs(urls) }, onCancel: { showingImporter = false }).ignoresSafeArea()
             }
-            .sheet(isPresented: $showingCertificates) {
-                CertificateSelectionView(selected: $selectedCertificates)
-            }
-            .sheet(item: $selectedApp) { GuestContainerView(app: $0) }
+            .sheet(isPresented: $showingCertificates) { CertificateSelectionView(selected: $selectedCertificates) }
+            .sheet(isPresented: $showingSigningSettings) { SigningServiceSettingsView() }
+            .sheet(item: $selectedApp) { GuestContainerView(app: $0, enterpriseMode: enterpriseMode, selectedCertificates: selectedCertificates, signingServiceURL: signingServiceURL, signing: $signing, onMessage: { message = $0 }) }
             .alert("Dual IPA", isPresented: Binding(get: { !message.isEmpty }, set: { if !$0 { message = "" } })) {
                 Button("OK") { message = "" }
             } message: { Text(message) }
@@ -321,20 +340,105 @@ struct ContentView: View {
 
 struct GuestContainerView: View {
     let app: GuestApp
+    let enterpriseMode: Bool
+    let selectedCertificates: Set<String>
+    let signingServiceURL: String
+    @Binding var signing: Bool
+    let onMessage: (String) -> Void
     @Environment(\.dismiss) private var dismiss
+
     private var storedIPAURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("DualIPA", isDirectory: true).appendingPathComponent(app.storedFileName)
     }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 20) {
                 Image(systemName: "app.fill").font(.system(size: 64)).frame(width: 110, height: 110).background(.thinMaterial).clipShape(RoundedRectangle(cornerRadius: 24))
                 Text(app.displayName).font(.title.bold())
-                Text("Guest app container").foregroundStyle(.secondary)
+                Text(enterpriseMode ? "Enterprise app container" : "Guest app container").foregroundStyle(.secondary)
                 Text(FileManager.default.fileExists(atPath: storedIPAURL.path) ? "IPA stored successfully" : "IPA file is missing").font(.footnote).foregroundStyle(.secondary)
-                Text("The IPA is stored in this app's private library. Signing and installing an app still requires Apple's permitted signing and installation mechanisms.").font(.footnote).multilineTextAlignment(.center).foregroundStyle(.secondary).padding(.horizontal)
+
+                if enterpriseMode {
+                    Text(selectedCertificates.isEmpty ? "No certificate selected" : "Certificate: \(selectedCertificates.sorted().joined(separator: ", "))")
+                        .font(.footnote).multilineTextAlignment(.center).foregroundStyle(selectedCertificates.isEmpty ? .orange : .secondary).padding(.horizontal)
+
+                    Button {
+                        signAndLaunch()
+                    } label: {
+                        HStack {
+                            if signing { ProgressView().tint(.white) }
+                            else { Image(systemName: "signature") }
+                            Text(signing ? "Signing…" : "Sign & Launch").fontWeight(.semibold)
+                        }
+                        .frame(maxWidth: .infinity).padding()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(signing || !FileManager.default.fileExists(atPath: storedIPAURL.path))
+                }
+
+                Text(enterpriseMode ? "Signing is performed by the configured authorized service. Private signing keys remain on that service; this app does not extract or embed them." : "The IPA is stored in this app's private library. Signing and installing an app still requires Apple's permitted signing and installation mechanisms.")
+                    .font(.footnote).multilineTextAlignment(.center).foregroundStyle(.secondary).padding(.horizontal)
                 Spacer()
-            }.padding().navigationTitle("Launch").toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
-        }.preferredColorScheme(.dark)
+            }
+            .padding()
+            .navigationTitle("Launch")
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func signAndLaunch() {
+        guard let endpoint = URL(string: signingServiceURL), ["https"].contains(endpoint.scheme?.lowercased() ?? "") else {
+            onMessage("Configure an HTTPS authorized signing-service URL first.")
+            return
+        }
+        guard selectedCertificates.count == 1, let certificate = selectedCertificates.first else {
+            onMessage("Select exactly one authorized enterprise certificate before launching.")
+            return
+        }
+        guard let ipaData = try? Data(contentsOf: storedIPAURL) else {
+            onMessage("The stored IPA could not be read.")
+            return
+        }
+
+        signing = true
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        let boundary = "Boundary-\(UUID().uuidString)"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        func append(_ string: String) { body.append(Data(string.utf8)) }
+        append("--\(boundary)\r\nContent-Disposition: form-data; name=\"certificate\"\r\n\r\n\(certificate)\r\n")
+        append("--\(boundary)\r\nContent-Disposition: form-data; name=\"ipa\"; filename=\"\(app.fileName)\"\r\nContent-Type: application/octet-stream\r\n\r\n")
+        body.append(ipaData)
+        append("\r\n--\(boundary)--\r\n")
+        request.httpBody = body
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async {
+                signing = false
+                if let error {
+                    onMessage("Signing failed: \(error.localizedDescription)")
+                    return
+                }
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), let data else {
+                    onMessage("Signing service returned an invalid response.")
+                    return
+                }
+                do {
+                    let result = try JSONDecoder().decode(SigningResponse.self, from: data)
+                    guard let manifestURL = URL(string: result.installManifestURL), manifestURL.scheme?.lowercased() == "https" else {
+                        throw NSError(domain: "DualIPA.Signing", code: 2, userInfo: [NSLocalizedDescriptionKey: "The signing service did not return a valid HTTPS manifest URL."])
+                    }
+                    let installURL = URL(string: "itms-services://?action=download-manifest&url=\(manifestURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? manifestURL.absoluteString)")!
+                    UIApplication.shared.open(installURL)
+                    onMessage("Signing finished. iOS installation has been opened.")
+                } catch {
+                    onMessage("Signing service response error: \(error.localizedDescription)")
+                }
+            }
+        }.resume()
     }
 }
