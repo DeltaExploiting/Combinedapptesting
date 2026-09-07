@@ -11,12 +11,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: '15.4'
+
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Apply IPA import fix
+        run: python3 scripts/harden_ipa_import.py
+
       - name: Generate Xcode project
         working-directory: DualIPAWrapper
         run: |
@@ -26,11 +32,13 @@ jobs:
           if grep -q 'objectVersion = 77;' "$PROJECT_FILE"; then
             sed -i '' 's/objectVersion = 77;/objectVersion = 56;/' "$PROJECT_FILE"
           fi
+
       - name: Build unsigned Dual IPA
         working-directory: DualIPAWrapper
         run: |
           set -euo pipefail
           xcodebuild -project DualIPAWrapper.xcodeproj -scheme DualIPAWrapper -sdk iphoneos -configuration Release -derivedDataPath "$GITHUB_WORKSPACE/build" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+
       - name: Package Dual IPA
         run: |
           set -euo pipefail
@@ -41,6 +49,7 @@ jobs:
           cp -R "$APP_PATH" Payload/
           /usr/bin/zip -qry dist/DualIPAWrapper-unsigned.ipa Payload
           test -s dist/DualIPAWrapper-unsigned.ipa
+
       - name: Upload Dual IPA
         uses: actions/upload-artifact@v4
         with:
