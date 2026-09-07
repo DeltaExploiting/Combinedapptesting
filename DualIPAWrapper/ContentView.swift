@@ -23,7 +23,13 @@ struct IPAFilePicker: UIViewControllerRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: false)
+        // Use generic public.data instead of an IPA UTI. iOS Files does not
+        // consistently advertise .ipa files as a selectable custom type.
+        // The app validates the selected file after the picker returns.
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: [UTType.data],
+            asCopy: true
+        )
         picker.allowsMultipleSelection = true
         picker.delegate = context.coordinator
         return picker
@@ -32,15 +38,23 @@ struct IPAFilePicker: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
 
     final class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let parent: IPAFilePicker
-        init(_ parent: IPAFilePicker) { self.parent = parent }
+        private let parent: IPAFilePicker
+
+        init(_ parent: IPAFilePicker) {
+            self.parent = parent
+            super.init()
+        }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            parent.onPick(urls)
+            DispatchQueue.main.async {
+                self.parent.onPick(urls)
+            }
         }
 
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-            parent.onCancel()
+            DispatchQueue.main.async {
+                self.parent.onCancel()
+            }
         }
     }
 }
@@ -113,6 +127,7 @@ struct ContentView: View {
                     },
                     onCancel: { showingImporter = false }
                 )
+                .ignoresSafeArea()
             }
             .sheet(item: $selectedApp) { GuestContainerView(app: $0) }
             .alert("Dual IPA", isPresented: Binding(
@@ -127,12 +142,8 @@ struct ContentView: View {
     }
 
     private func importIPAs(_ urls: [URL]) {
-        let ipaURLs = urls.filter {
-            $0.isFileURL && $0.pathExtension.lowercased() == "ipa"
-        }
-
-        guard !ipaURLs.isEmpty else {
-            message = "No IPA selected. Please choose a file ending in .ipa."
+        guard !urls.isEmpty else {
+            message = "No file was selected."
             return
         }
 
@@ -141,18 +152,25 @@ struct ContentView: View {
             var imported = 0
             var failures: [String] = []
 
-            for url in ipaURLs {
+            for url in urls {
                 let hasAccess = url.startAccessingSecurityScopedResource()
                 defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
 
                 do {
+                    // Accept IPA files regardless of their original filename.
+                    // An IPA is a ZIP archive containing a Payload directory.
+                    let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+                    guard data.count >= 4,
+                          data[0] == 0x50, data[1] == 0x4B,
+                          data[2] == 0x03, data[3] == 0x04 else {
+                        throw CocoaError(.fileReadCorruptFile, userInfo: [
+                            NSLocalizedDescriptionKey: "This file is not a valid IPA/ZIP archive."
+                        ])
+                    }
+
                     let id = UUID()
                     let storedName = "\(id.uuidString).ipa"
                     let destination = storageURL.appendingPathComponent(storedName)
-                    let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-                    guard !data.isEmpty else {
-                        throw CocoaError(.fileReadUnknown, userInfo: [NSLocalizedDescriptionKey: "The selected IPA is empty."])
-                    }
                     try data.write(to: destination, options: .atomic)
 
                     apps.append(GuestApp(
