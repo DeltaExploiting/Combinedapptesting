@@ -12,6 +12,8 @@ targets:
       - ContentView.swift
     resources:
       - Resources
+    entitlements:
+      path: DualIPAWrapper.entitlements
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.example.DualIPAWrapper
       SWIFT_VERSION: "5.0"
