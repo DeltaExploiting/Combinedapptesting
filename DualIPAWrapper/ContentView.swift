@@ -17,67 +17,62 @@ struct GuestApp: Identifiable, Codable, Hashable {
     let storedFileName: String
 }
 
+struct EnterpriseCertificate: Identifiable, Hashable {
+    let id = UUID()
+    let name: String
+}
+
+private let enterpriseCertificates: [EnterpriseCertificate] = [
+    EnterpriseCertificate(name: "Aramco Services Company"),
+    EnterpriseCertificate(name: "CENTRAL POWER INFORMATION TECHNOLOGY COMPANY"),
+    EnterpriseCertificate(name: "China Telecom Corporation Limited"),
+    EnterpriseCertificate(name: "HSBC Bank plc"),
+    EnterpriseCertificate(name: "Jiangsu Simcere Pharmaceutical Co. Ltd"),
+    EnterpriseCertificate(name: "Moving Increasingly Interconnected Technology Co. Ltd"),
+    EnterpriseCertificate(name: "VIETNAM-NEWPV")
+]
+
 struct AppleSignInButton: UIViewRepresentable {
     let onCompletion: (Result<ASAuthorizationAppleIDCredential, Error>) -> Void
-
     func makeCoordinator() -> Coordinator { Coordinator(self) }
-
     func makeUIView(context: Context) -> ASAuthorizationAppleIDButton {
         let button = ASAuthorizationAppleIDButton(type: .signIn, style: .white)
         button.cornerRadius = 12
         button.addTarget(context.coordinator, action: #selector(Coordinator.signIn), for: .touchUpInside)
         return button
     }
-
     func updateUIView(_ uiView: ASAuthorizationAppleIDButton, context: Context) {}
 
     final class Coordinator: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
         private let parent: AppleSignInButton
         private var authorizationController: ASAuthorizationController?
-
-        init(_ parent: AppleSignInButton) {
-            self.parent = parent
-            super.init()
-        }
-
+        init(_ parent: AppleSignInButton) { self.parent = parent; super.init() }
         @objc func signIn() {
             let request = ASAuthorizationAppleIDProvider().createRequest()
             request.requestedScopes = [.fullName, .email]
-
             let controller = ASAuthorizationController(authorizationRequests: [request])
             controller.delegate = self
             controller.presentationContextProvider = self
-
-            // Keep a strong reference until Apple finishes the authorization flow.
             authorizationController = controller
             controller.performRequests()
         }
-
         func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
             defer { authorizationController = nil }
-
             guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
-                let error = NSError(
-                    domain: "DualIPA.AppleSignIn",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Apple returned an unexpected authorization credential."]
-                )
+                let error = NSError(domain: "DualIPA.AppleSignIn", code: 1, userInfo: [NSLocalizedDescriptionKey: "Apple returned an unexpected authorization credential."])
                 DispatchQueue.main.async { self.parent.onCompletion(.failure(error)) }
                 return
             }
-
             DispatchQueue.main.async { self.parent.onCompletion(.success(credential)) }
         }
-
         func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
             authorizationController = nil
             DispatchQueue.main.async { self.parent.onCompletion(.failure(error)) }
         }
-
         func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
             let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-            let activeScene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
-            return activeScene?.windows.first(where: { $0.isKeyWindow }) ?? activeScene?.windows.first ?? ASPresentationAnchor()
+            let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+            return scene?.windows.first(where: { $0.isKeyWindow }) ?? scene?.windows.first ?? ASPresentationAnchor()
         }
     }
 }
@@ -85,29 +80,71 @@ struct AppleSignInButton: UIViewRepresentable {
 struct IPAFilePicker: UIViewControllerRepresentable {
     let onPick: ([URL]) -> Void
     let onCancel: () -> Void
-
     func makeCoordinator() -> Coordinator { Coordinator(self) }
-
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         let picker = UIDocumentPickerViewController(documentTypes: [UTType.item.identifier], in: .import)
         picker.allowsMultipleSelection = true
         picker.delegate = context.coordinator
         return picker
     }
-
     func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-
     final class Coordinator: NSObject, UIDocumentPickerDelegate {
         private let parent: IPAFilePicker
         init(_ parent: IPAFilePicker) { self.parent = parent; super.init() }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { DispatchQueue.main.async { self.parent.onPick(urls) } }
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { DispatchQueue.main.async { self.parent.onCancel() } }
+    }
+}
 
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            DispatchQueue.main.async { self.parent.onPick(urls) }
-        }
+struct CertificateSelectionView: View {
+    @Binding var selected: Set<String>
+    @Environment(\.dismiss) private var dismiss
 
-        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-            DispatchQueue.main.async { self.parent.onCancel() }
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button(selected.count == enterpriseCertificates.count ? "Deselect All" : "Select All") {
+                        if selected.count == enterpriseCertificates.count {
+                            selected.removeAll()
+                        } else {
+                            selected = Set(enterpriseCertificates.map(\.name))
+                        }
+                    }
+                }
+                Section("Enterprise Certificates") {
+                    ForEach(enterpriseCertificates) { certificate in
+                        Button {
+                            if selected.contains(certificate.name) { selected.remove(certificate.name) }
+                            else { selected.insert(certificate.name) }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: selected.contains(certificate.name) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selected.contains(certificate.name) ? .tint : .secondary)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(certificate.name).foregroundStyle(.primary)
+                                    Text("Authorized certificate selection")
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                Section {
+                    Text("Only use certificates you are authorized to use. This screen selects certificate identities; it does not import or expose private signing keys.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Certificates")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -116,21 +153,18 @@ struct ContentView: View {
     @AppStorage("enterpriseMode") private var enterpriseMode = false
     @State private var apps: [GuestApp] = []
     @State private var showingImporter = false
+    @State private var showingCertificates = false
+    @State private var selectedCertificates: Set<String> = []
     @State private var selectedApp: GuestApp?
     @State private var message = ""
 
     private var storageURL: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("DualIPA", isDirectory: true)
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("DualIPA", isDirectory: true)
     }
 
     var body: some View {
         Group {
-            if appleSignedIn || enterpriseMode {
-                libraryView
-            } else {
-                loginView
-            }
+            if appleSignedIn || enterpriseMode { libraryView } else { loginView }
         }
         .preferredColorScheme(.dark)
         .task { loadApps() }
@@ -141,15 +175,9 @@ struct ContentView: View {
             Color(red: 0.055, green: 0.055, blue: 0.07).ignoresSafeArea()
             VStack(spacing: 22) {
                 Spacer()
-                Image(systemName: "square.stack.3d.up.fill")
-                    .font(.system(size: 70))
-                Text("Dual IPA")
-                    .font(.system(size: 36, weight: .bold))
-                Text("Sign in with your Apple Account to continue.")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 32)
-
+                Image(systemName: "square.stack.3d.up.fill").font(.system(size: 70))
+                Text("Dual IPA").font(.system(size: 36, weight: .bold))
+                Text("Sign in with your Apple Account to continue.").multilineTextAlignment(.center).foregroundStyle(.secondary).padding(.horizontal, 32)
                 AppleSignInButton { result in
                     switch result {
                     case .success:
@@ -159,42 +187,25 @@ struct ContentView: View {
                         message = "Apple sign-in failed: \(error.localizedDescription)"
                     }
                 }
-                .frame(height: 52)
-                .padding(.horizontal, 28)
-
+                .frame(height: 52).padding(.horizontal, 28)
                 Text("Your Apple Account password is handled by Apple and is never entered into Dual IPA.")
-                    .font(.caption)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 36)
-
+                    .font(.caption).multilineTextAlignment(.center).foregroundStyle(.tertiary).padding(.horizontal, 36)
                 Divider().padding(.horizontal, 36)
-
                 Button {
                     enterpriseMode = true
                     appleSignedIn = false
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "building.2.fill")
-                        Text("Use Enterprise Certificates")
-                            .fontWeight(.semibold)
+                        Text("Use Enterprise Certificates").fontWeight(.semibold)
                         Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.bold))
+                        Image(systemName: "chevron.right").font(.caption.weight(.bold))
                     }
-                    .padding()
-                    .frame(maxWidth: .infinity)
-                    .background(.thinMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .padding().frame(maxWidth: .infinity).background(.thinMaterial).clipShape(RoundedRectangle(cornerRadius: 14))
                 }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 28)
-
-                Text("Use this option only with an enterprise certificate you are authorized to use. Dual IPA does not collect Apple Account passwords or third-party certificate credentials.")
-                    .font(.caption2)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 34)
+                .buttonStyle(.plain).padding(.horizontal, 28)
+                Text("Use this option only with an enterprise certificate you are authorized to use.")
+                    .font(.caption2).multilineTextAlignment(.center).foregroundStyle(.tertiary).padding(.horizontal, 34)
                 Spacer()
             }
         }
@@ -210,21 +221,16 @@ struct ContentView: View {
                     ContentUnavailableView {
                         Label("No Apps", systemImage: "square.stack.3d.up")
                     } description: {
-                        Text(enterpriseMode ? "Authorized enterprise signing mode is selected. Import an IPA to add it to your library." : "Import an IPA to add it to your app library.")
+                        Text(enterpriseMode ? "Enterprise mode is selected. Import an IPA to add it to your library." : "Import an IPA to add it to your app library.")
                     } actions: {
-                        Button("Import IPA") { showingImporter = true }
-                            .buttonStyle(.borderedProminent)
+                        Button("Import IPA") { showingImporter = true }.buttonStyle(.borderedProminent)
                     }
                 } else {
                     List {
                         ForEach(apps) { app in
                             Button { selectedApp = app } label: {
                                 HStack(spacing: 14) {
-                                    Image(systemName: "app.fill")
-                                        .font(.title2)
-                                        .frame(width: 48, height: 48)
-                                        .background(.thinMaterial)
-                                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                                    Image(systemName: "app.fill").font(.title2).frame(width: 48, height: 48).background(.thinMaterial).clipShape(RoundedRectangle(cornerRadius: 12))
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(app.displayName).font(.headline)
                                         Text("Version \(app.version)").font(.caption).foregroundStyle(.secondary)
@@ -233,12 +239,9 @@ struct ContentView: View {
                                     Spacer()
                                     Text("Launch").font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
                                 }
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .onDelete { deleteApps(at: $0) }
-                    }
-                    .scrollContentBackground(.hidden)
+                            }.buttonStyle(.plain)
+                        }.onDelete { deleteApps(at: $0) }
+                    }.scrollContentBackground(.hidden)
                 }
             }
             .background(Color(red: 0.055, green: 0.055, blue: 0.07))
@@ -246,21 +249,20 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { showingImporter = true } label: { Image(systemName: "plus") }
-                    Button("Sign Out") {
-                        appleSignedIn = false
-                        enterpriseMode = false
+                    if enterpriseMode {
+                        Button { showingCertificates = true } label: {
+                            Label("Certificates", systemImage: "checkmark.seal")
+                        }
+                        .accessibilityLabel("Certificates")
                     }
+                    Button("Sign Out") { appleSignedIn = false; enterpriseMode = false }
                 }
             }
             .sheet(isPresented: $showingImporter) {
-                IPAFilePicker(
-                    onPick: { urls in
-                        showingImporter = false
-                        importIPAs(urls)
-                    },
-                    onCancel: { showingImporter = false }
-                )
-                .ignoresSafeArea()
+                IPAFilePicker(onPick: { urls in showingImporter = false; importIPAs(urls) }, onCancel: { showingImporter = false }).ignoresSafeArea()
+            }
+            .sheet(isPresented: $showingCertificates) {
+                CertificateSelectionView(selected: $selectedCertificates)
             }
             .sheet(item: $selectedApp) { GuestContainerView(app: $0) }
             .alert("Dual IPA", isPresented: Binding(get: { !message.isEmpty }, set: { if !$0 { message = "" } })) {
@@ -298,10 +300,7 @@ struct ContentView: View {
     }
 
     private func deleteApps(at offsets: IndexSet) {
-        for index in offsets {
-            let app = apps[index]
-            try? FileManager.default.removeItem(at: storageURL.appendingPathComponent(app.storedFileName))
-        }
+        for index in offsets { let app = apps[index]; try? FileManager.default.removeItem(at: storageURL.appendingPathComponent(app.storedFileName)) }
         apps.remove(atOffsets: offsets)
         saveApps()
     }
@@ -309,14 +308,12 @@ struct ContentView: View {
     private func saveApps() {
         do {
             try FileManager.default.createDirectory(at: storageURL, withIntermediateDirectories: true, attributes: nil)
-            let data = try JSONEncoder().encode(apps)
-            try data.write(to: storageURL.appendingPathComponent("apps.json"), options: .atomic)
+            try JSONEncoder().encode(apps).write(to: storageURL.appendingPathComponent("apps.json"), options: .atomic)
         } catch { message = "Could not save the app library: \(error.localizedDescription)" }
     }
 
     private func loadApps() {
-        guard let data = try? Data(contentsOf: storageURL.appendingPathComponent("apps.json")),
-              let saved = try? JSONDecoder().decode([GuestApp].self, from: data) else { return }
+        guard let data = try? Data(contentsOf: storageURL.appendingPathComponent("apps.json")), let saved = try? JSONDecoder().decode([GuestApp].self, from: data) else { return }
         apps = saved.filter { FileManager.default.fileExists(atPath: storageURL.appendingPathComponent($0.storedFileName).path) }
         if apps.count != saved.count { saveApps() }
     }
@@ -325,33 +322,19 @@ struct ContentView: View {
 struct GuestContainerView: View {
     let app: GuestApp
     @Environment(\.dismiss) private var dismiss
-
     private var storedIPAURL: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("DualIPA", isDirectory: true)
-            .appendingPathComponent(app.storedFileName)
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("DualIPA", isDirectory: true).appendingPathComponent(app.storedFileName)
     }
-
     var body: some View {
         NavigationStack {
             VStack(spacing: 20) {
-                Image(systemName: "app.fill")
-                    .font(.system(size: 64))
-                    .frame(width: 110, height: 110)
-                    .background(.thinMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 24))
+                Image(systemName: "app.fill").font(.system(size: 64)).frame(width: 110, height: 110).background(.thinMaterial).clipShape(RoundedRectangle(cornerRadius: 24))
                 Text(app.displayName).font(.title.bold())
                 Text("Guest app container").foregroundStyle(.secondary)
-                Text(FileManager.default.fileExists(atPath: storedIPAURL.path) ? "IPA stored successfully" : "IPA file is missing")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Text("The IPA is stored in this app's private library. Signing and installing an app still requires Apple's permitted signing and installation mechanisms.")
-                    .font(.footnote).multilineTextAlignment(.center).foregroundStyle(.secondary).padding(.horizontal)
+                Text(FileManager.default.fileExists(atPath: storedIPAURL.path) ? "IPA stored successfully" : "IPA file is missing").font(.footnote).foregroundStyle(.secondary)
+                Text("The IPA is stored in this app's private library. Signing and installing an app still requires Apple's permitted signing and installation mechanisms.").font(.footnote).multilineTextAlignment(.center).foregroundStyle(.secondary).padding(.horizontal)
                 Spacer()
-            }
-            .padding()
-            .navigationTitle("Launch")
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
-        }
-        .preferredColorScheme(.dark)
+            }.padding().navigationTitle("Launch").toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+        }.preferredColorScheme(.dark)
     }
 }
