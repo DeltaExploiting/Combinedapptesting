@@ -32,10 +32,10 @@ jobs:
           new = '.foregroundStyle(selected.contains(certificate.name) ? Color.accentColor : Color.secondary)'
           if old in s:
               s = s.replace(old, new)
-              p.write_text(s)
+          p.write_text(s)
           PY
 
-      - name: Fix IPA document picker import
+      - name: Fix IPA picker and import handling
         working-directory: DualIPAWrapper
         run: |
           set -euo pipefail
@@ -43,19 +43,99 @@ jobs:
           from pathlib import Path
           p = Path('ContentView.swift')
           s = p.read_text()
-          old = 'let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.item])\n        picker.allowsMultipleSelection = true\n        picker.delegate = context.coordinator'
-          new = 'let picker = UIDocumentPickerViewController(documentTypes: [UTType.item.identifier], in: .import)\n        picker.allowsMultipleSelection = true\n        picker.delegate = context.coordinator'
-          if old in s:
-              s = s.replace(old, new, 1)
-          else:
-              raise SystemExit('IPA picker initializer not found')
 
-          old_callback = 'func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {\n            parent.picked(urls)\n        }'
-          new_callback = 'func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {\n            DispatchQueue.main.async {\n                self.parent.picked(urls)\n            }\n        }'
-          if old_callback in s:
-              s = s.replace(old_callback, new_callback, 1)
-          else:
+          old_picker = '''        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.item])
+        picker.allowsMultipleSelection = true
+        picker.delegate = context.coordinator
+        return picker'''
+          new_picker = '''        let ipaType = UTType(filenameExtension: "ipa") ?? .data
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [ipaType], asCopy: true)
+        picker.allowsMultipleSelection = true
+        picker.delegate = context.coordinator
+        return picker'''
+          if old_picker not in s:
+              raise SystemExit('IPA picker block not found')
+          s = s.replace(old_picker, new_picker, 1)
+
+          old_callback = '''        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            parent.picked(urls)
+        }'''
+          new_callback = '''        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            let selected = urls
+            DispatchQueue.main.async {
+                self.parent.picked(selected)
+            }
+        }'''
+          if old_callback not in s:
               raise SystemExit('IPA picker callback not found')
+          s = s.replace(old_callback, new_callback, 1)
+
+          old_import = '''    private func importIPAs(_ urls: [URL]) {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url), data.count > 4,
+                  data[0] == 0x50, data[1] == 0x4B else { continue }
+            let id = UUID()
+            let stored = "\\(id).ipa"
+            try? data.write(to: directory.appendingPathComponent(stored), options: .atomic)
+            apps.append(GuestApp(id: id, fileName: url.lastPathComponent, displayName: url.deletingPathExtension().lastPathComponent, version: "Imported", importedAt: Date(), storedFileName: stored))
+        }
+        saveApps()
+    }'''
+          new_import = '''    private func importIPAs(_ urls: [URL]) {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var importedCount = 0
+
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+
+            var data: Data?
+            var coordinationError: NSError?
+            let coordinator = NSFileCoordinator()
+            coordinator.coordinate(readingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in
+                data = try? Data(contentsOf: coordinatedURL)
+            }
+
+            guard let data, data.count >= 4,
+                  data[0] == 0x50, data[1] == 0x4B,
+                  data[2] == 0x03 || data[2] == 0x05 || data[2] == 0x07,
+                  data[3] == 0x04 || data[3] == 0x06 || data[3] == 0x08 else {
+                continue
+            }
+
+            let id = UUID()
+            let stored = "\\(id).ipa"
+            let destination = directory.appendingPathComponent(stored)
+            do {
+                try data.write(to: destination, options: .atomic)
+                apps.append(GuestApp(
+                    id: id,
+                    fileName: url.lastPathComponent,
+                    displayName: url.deletingPathExtension().lastPathComponent,
+                    version: "Imported",
+                    importedAt: Date(),
+                    storedFileName: stored
+                ))
+                importedCount += 1
+            } catch {
+                continue
+            }
+        }
+
+        saveApps()
+        if importedCount == 0 {
+            message = "The selected file could not be imported. Make sure it is a valid .ipa file and try again."
+        } else if importedCount < urls.count {
+            message = "Imported \\(importedCount) of \\(urls.count) selected IPA files."
+        }
+    }'''
+          if old_import not in s:
+              raise SystemExit('importIPAs function not found')
+          s = s.replace(old_import, new_import, 1)
+
           p.write_text(s)
           PY
 
