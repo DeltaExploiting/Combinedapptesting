@@ -1,6 +1,8 @@
 name: DualIPAWrapper
 options:
   bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "17.0"
 targets:
   DualIPAWrapper:
     type: application
@@ -13,4 +15,6 @@ targets:
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.example.DualIPAWrapper
       SWIFT_VERSION: "5.0"
+      GENERATE_INFOPLIST_FILE: YES
+      INFOPLIST_KEY_CFBundleDisplayName: Dual IPA Wrapper
       INFOPLIST_KEY_UILaunchScreen_Generation: YES
