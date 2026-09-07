@@ -11,6 +11,9 @@ struct DualIPAWrapperApp: App {
 struct ContentView: View {
     @State private var message = ""
 
+    // SideInstaller must register this scheme in its own Info.plist.
+    private let sideInstallerURL = URL(string: "sideinstaller://")!
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 18) {
@@ -18,27 +21,18 @@ struct ContentView: View {
                     Text("ESign")
                         .font(.title2.bold())
                     Spacer()
-                    Button("Switch to SideInstaller") {
-                        switchToSideInstaller()
+                    Button("Open SideInstaller") {
+                        openSideInstaller()
                     }
                     .buttonStyle(.borderedProminent)
                 }
                 .padding(.horizontal)
                 .padding(.top)
 
-                Text("ESign and SideInstaller are bundled with this app.")
+                Text("Open the installed SideInstaller app directly.")
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
-
-                Button {
-                    exportIPA(named: "SideInstaller")
-                } label: {
-                    Label("Open SideInstaller IPA", systemImage: "square.and.arrow.up")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .padding(.horizontal)
 
                 Spacer()
 
@@ -46,6 +40,7 @@ struct ContentView: View {
                     Text(message)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                         .padding()
                 }
             }
@@ -54,19 +49,11 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
     }
 
-    private func switchToSideInstaller() {
-        message = "SideInstaller is bundled in this app. iOS does not allow an app to silently install another IPA."
-        exportIPA(named: "SideInstaller")
-    }
-
-    private func exportIPA(named name: String) {
-        guard let url = Bundle.main.url(forResource: name, withExtension: "ipa") else {
-            message = "SideInstaller.ipa was not bundled."
-            return
+    private func openSideInstaller() {
+        UIApplication.shared.open(sideInstallerURL, options: [:]) { success in
+            if !success {
+                message = "SideInstaller cannot be opened because the installed app does not currently register the sideinstaller:// URL scheme."
+            }
         }
-        let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-              let root = scene.windows.first?.rootViewController else { return }
-        root.present(controller, animated: true)
     }
 }
