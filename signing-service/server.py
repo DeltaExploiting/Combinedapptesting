@@ -8,7 +8,7 @@ import uuid
 import zipfile
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 app = FastAPI(title="Dual IPA Authorized Signing Service")
@@ -66,9 +66,9 @@ def health():
 
 
 @app.get("/certificates")
-def certificates(authorization: str | None = None):
+def certificates(authorization: str | None = Header(default=None)):
     """Return only certificate display names configured by the service operator."""
-    require_token(authorization or None)
+    require_token(authorization)
     return {"certificates": list(CERTIFICATE_MAP.keys())}
 
 
@@ -76,9 +76,9 @@ def certificates(authorization: str | None = None):
 async def sign(
     ipa: UploadFile = File(...),
     certificate: str = Form(...),
-    authorization: str | None = None,
+    authorization: str | None = Header(default=None),
 ):
-    require_token(authorization or None)
+    require_token(authorization)
     alias = CERTIFICATE_MAP.get(certificate)
     if not alias:
         raise HTTPException(status_code=403, detail="Certificate is not configured for this signing service")
@@ -128,7 +128,7 @@ async def sign(
         manifest["items"][0]["metadata"]["version"] = info.get("CFBundleShortVersionString", info.get("CFBundleVersion", "1.0"))
         manifest_path = out_dir / f"{job_id}.plist"
         manifest_path.write_bytes(plistlib.dumps(manifest, fmt=plistlib.FMT_XML, sort_keys=False))
-        return {"installManifestURL": f"{PUBLIC_BASE_URL}/{manifest_path.name}"}
+        return {"installURL": f"{PUBLIC_BASE_URL}/{manifest_path.name}", "installManifestURL": f"{PUBLIC_BASE_URL}/{manifest_path.name}"}
     except (zipfile.BadZipFile, RuntimeError, subprocess.CalledProcessError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     finally:
