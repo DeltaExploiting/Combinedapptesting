@@ -20,6 +20,9 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Move signing credentials to service UI
+        run: python3 scripts/migrate_signing_service_ui.py
+
       - name: Fix SwiftUI certificate color expression
         working-directory: DualIPAWrapper
         run: |
@@ -43,7 +46,6 @@ jobs:
           from pathlib import Path
           p = Path('ContentView.swift')
           s = p.read_text()
-
           old_picker = '''        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.item])
         picker.allowsMultipleSelection = true
         picker.delegate = context.coordinator
@@ -56,7 +58,6 @@ jobs:
           if old_picker not in s:
               raise SystemExit('IPA picker block not found')
           s = s.replace(old_picker, new_picker, 1)
-
           old_callback = '''        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
             parent.picked(urls)
         }'''
@@ -69,7 +70,6 @@ jobs:
           if old_callback not in s:
               raise SystemExit('IPA picker callback not found')
           s = s.replace(old_callback, new_callback, 1)
-
           old_import = '''    private func importIPAs(_ urls: [URL]) {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         for url in urls {
@@ -87,55 +87,33 @@ jobs:
           new_import = '''    private func importIPAs(_ urls: [URL]) {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         var importedCount = 0
-
         for url in urls {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-
             var data: Data?
             var coordinationError: NSError?
             let coordinator = NSFileCoordinator()
             coordinator.coordinate(readingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in
                 data = try? Data(contentsOf: coordinatedURL)
             }
-
             guard let data, data.count >= 4,
                   data[0] == 0x50, data[1] == 0x4B,
                   data[2] == 0x03 || data[2] == 0x05 || data[2] == 0x07,
-                  data[3] == 0x04 || data[3] == 0x06 || data[3] == 0x08 else {
-                continue
-            }
-
+                  data[3] == 0x04 || data[3] == 0x06 || data[3] == 0x08 else { continue }
             let id = UUID()
             let stored = "\\(id).ipa"
-            let destination = directory.appendingPathComponent(stored)
             do {
-                try data.write(to: destination, options: .atomic)
-                apps.append(GuestApp(
-                    id: id,
-                    fileName: url.lastPathComponent,
-                    displayName: url.deletingPathExtension().lastPathComponent,
-                    version: "Imported",
-                    importedAt: Date(),
-                    storedFileName: stored
-                ))
+                try data.write(to: directory.appendingPathComponent(stored), options: .atomic)
+                apps.append(GuestApp(id: id, fileName: url.lastPathComponent, displayName: url.deletingPathExtension().lastPathComponent, version: "Imported", importedAt: Date(), storedFileName: stored))
                 importedCount += 1
-            } catch {
-                continue
-            }
+            } catch { continue }
         }
-
         saveApps()
-        if importedCount == 0 {
-            message = "The selected file could not be imported. Make sure it is a valid .ipa file and try again."
-        } else if importedCount < urls.count {
-            message = "Imported \\(importedCount) of \\(urls.count) selected IPA files."
-        }
+        if importedCount == 0 { message = "The selected file could not be imported. Make sure it is a valid .ipa file and try again." }
     }'''
           if old_import not in s:
               raise SystemExit('importIPAs function not found')
           s = s.replace(old_import, new_import, 1)
-
           p.write_text(s)
           PY
 
@@ -153,15 +131,7 @@ jobs:
         working-directory: DualIPAWrapper
         run: |
           set -euo pipefail
-          xcodebuild \
-            -project DualIPAWrapper.xcodeproj \
-            -scheme DualIPAWrapper \
-            -sdk iphoneos \
-            -configuration Release \
-            -derivedDataPath "$GITHUB_WORKSPACE/build" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            build
+          xcodebuild -project DualIPAWrapper.xcodeproj -scheme DualIPAWrapper -sdk iphoneos -configuration Release -derivedDataPath "$GITHUB_WORKSPACE/build" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 
       - name: Package Dual IPA
         run: |
@@ -172,6 +142,17 @@ jobs:
           mkdir -p Payload dist
           cp -R "$APP_PATH" Payload/
           /usr/bin/zip -qry dist/DualIPAWrapper-unsigned.ipa Payload
+          test -s dist/DualIPAWrapper-unsigned.ipa
+
+      - name: Verify IPA archive
+        run: |
+          set -euo pipefail
+          IPA="dist/DualIPAWrapper-unsigned.ipa"
+          /usr/bin/unzip -t "$IPA"
+          /usr/bin/unzip -l "$IPA" | grep -q 'Payload/DualIPAWrapper.app/'
+          /usr/bin/unzip -l "$IPA" | grep -q 'Payload/DualIPAWrapper.app/Info.plist'
+          /usr/bin/unzip -l "$IPA" | grep -q 'Payload/DualIPAWrapper.app/DualIPAWrapper'
+          shasum -a 256 "$IPA"
 
       - name: Upload Dual IPA
         uses: actions/upload-artifact@v4
